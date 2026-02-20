@@ -42,7 +42,34 @@ app = Flask(__name__)
 # ── Database configuration ───────────────────────────────────────────────────
 # Default: SQLite (trip_master.db in the project folder).
 # For production, set DATABASE_URL to a PostgreSQL connection string.
-_db_url = os.getenv('DATABASE_URL', f"sqlite:///{os.path.join(os.path.dirname(__file__), 'trip_master.db')}")
+#
+# URL safety: special characters in the password (@, #, ?, /, +, etc.) can
+# break SQLAlchemy's URL parser.  We use SQLAlchemy's own make_url() to parse
+# the raw string and re-serialise it — which correctly percent-encodes the
+# password component — before handing it to SQLALCHEMY_DATABASE_URI.
+# This means you can paste the raw Supabase connection string into Railway
+# without manually URL-encoding anything.
+
+def _safe_db_url(raw: str) -> str:
+    """
+    Parse a database URL with make_url() so SQLAlchemy handles any special
+    characters in the password, then return the normalised string.
+    Falls through unchanged for SQLite URLs (no password to worry about).
+    """
+    if not raw or raw.startswith('sqlite'):
+        return raw
+    try:
+        from sqlalchemy.engine import make_url
+        u = make_url(raw)
+        # Re-serialise: make_url percent-encodes the password automatically
+        return u.render_as_string(hide_password=False)
+    except Exception as exc:
+        logger.warning("Could not parse DATABASE_URL with make_url (%s) — using raw value", exc)
+        return raw
+
+_raw_db_url = os.getenv('DATABASE_URL', f"sqlite:///{os.path.join(os.path.dirname(__file__), 'trip_master.db')}")
+_db_url     = _safe_db_url(_raw_db_url)
+
 app.config['SQLALCHEMY_DATABASE_URI']        = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
