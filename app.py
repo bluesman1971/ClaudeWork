@@ -167,7 +167,16 @@ def _set_security_headers(response):
     return response
 
 # Initialize Anthropic client (renamed to avoid clash with 'client' variable in route bodies)
-anthropic_client = Anthropic()
+# Force IPv4 transport — some cloud hosts (including Railway) cannot reach external
+# APIs over IPv6, resulting in "Connection error" on every request.  Binding the
+# httpx transport to "0.0.0.0" (any local IPv4 interface) ensures the OS selects
+# an IPv4 path even when the DNS response includes AAAA records.
+import httpx as _httpx
+anthropic_client = Anthropic(
+    http_client=_httpx.Client(
+        transport=_httpx.HTTPTransport(local_address="0.0.0.0"),
+    )
+)
 
 # --- Constants ---
 
