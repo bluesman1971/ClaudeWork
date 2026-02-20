@@ -167,16 +167,9 @@ def _set_security_headers(response):
     return response
 
 # Initialize Anthropic client (renamed to avoid clash with 'client' variable in route bodies)
-# Use a generous timeout — Railway containers can have slow first-connection latency.
-# The base_url is set explicitly to ensure we always hit the real Anthropic API.
-import httpx as _httpx
-anthropic_client = Anthropic(
-    base_url="https://api.anthropic.com",
-    http_client=_httpx.Client(
-        timeout=_httpx.Timeout(60.0, connect=10.0),
-        follow_redirects=True,
-    )
-)
+# Use the plain default client — curl confirms Railway can reach api.anthropic.com
+# fine, so no custom transport or proxy configuration is needed.
+anthropic_client = Anthropic()
 
 # --- Constants ---
 
