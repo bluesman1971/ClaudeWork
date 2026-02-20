@@ -167,14 +167,14 @@ def _set_security_headers(response):
     return response
 
 # Initialize Anthropic client (renamed to avoid clash with 'client' variable in route bodies)
-# Force IPv4 transport — some cloud hosts (including Railway) cannot reach external
-# APIs over IPv6, resulting in "Connection error" on every request.  Binding the
-# httpx transport to "0.0.0.0" (any local IPv4 interface) ensures the OS selects
-# an IPv4 path even when the DNS response includes AAAA records.
+# Use a generous timeout — Railway containers can have slow first-connection latency.
+# The base_url is set explicitly to ensure we always hit the real Anthropic API.
 import httpx as _httpx
 anthropic_client = Anthropic(
+    base_url="https://api.anthropic.com",
     http_client=_httpx.Client(
-        transport=_httpx.HTTPTransport(local_address="0.0.0.0"),
+        timeout=_httpx.Timeout(60.0, connect=10.0),
+        follow_redirects=True,
     )
 )
 
