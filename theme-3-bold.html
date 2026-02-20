@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trip Master — Theme 3: Bold</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Outfit:wght@300;400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg:      #f0ede8;
+            --white:   #ffffff;
+            --ink:     #0f0f0f;
+            --coral:   #ff4d2e;
+            --teal:    #00897b;
+            --yellow:  #ffd54f;
+            --muted:   #888;
+            --border:  #e0dbd4;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--ink);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ── NAV ── */
+        nav {
+            padding: 20px 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky; top: 0; z-index: 100;
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-logo {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 1.1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .nav-logo span { color: var(--coral); }
+
+        .nav-pill {
+            padding: 8px 20px;
+            background: var(--ink);
+            color: var(--white);
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            border: none;
+        }
+
+        .nav-pill:hover { background: var(--coral); }
+
+        /* ── HERO ── */
+        .hero {
+            padding: 80px 40px 0;
+            max-width: 1100px;
+            margin: 0 auto;
+            position: relative;
+        }
+
+        .hero-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--yellow);
+            color: var(--ink);
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 32px;
+        }
+
+        .hero-tag-dot {
+            width: 6px; height: 6px;
+            background: var(--coral);
+            border-radius: 50%;
+            animation: blink 1.5s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .hero-headline {
+            font-family: 'Syne', sans-serif;
+            font-size: clamp(3.5rem, 8vw, 8rem);
+            font-weight: 800;
+            line-height: 0.9;
+            letter-spacing: -0.04em;
+            margin-bottom: 0;
+        }
+
+        .hero-headline .line2 { color: var(--coral); }
+        .hero-headline .line3 { -webkit-text-stroke: 2px var(--ink); color: transparent; }
+
+        .hero-bottom {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            padding: 40px 0 60px;
+            border-bottom: 2px solid var(--ink);
+            gap: 40px;
+        }
+
+        .hero-dek {
+            font-size: 1rem;
+            line-height: 1.7;
+            color: var(--muted);
+            max-width: 340px;
+            font-weight: 300;
+        }
+
+        .hero-stats {
+            display: flex;
+            gap: 40px;
+            flex-shrink: 0;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-num {
+            font-family: 'Syne', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: -0.04em;
+        }
+
+        .stat-num.coral { color: var(--coral); }
+        .stat-num.teal  { color: var(--teal); }
+
+        .stat-label {
+            font-size: 0.7rem;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        /* ── FORM ── */
+        .form-section {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 72px 40px 100px;
+        }
+
+        .form-eyebrow {
+            font-family: 'Syne', sans-serif;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 48px;
+        }
+
+        /* Basics row */
+        .basics-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+            margin-bottom: 56px;
+        }
+
+        .big-field {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .big-field label {
+            font-family: 'Syne', sans-serif;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .big-field input,
+        .big-field select {
+            padding: 18px 20px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.1rem;
+            font-weight: 400;
+            background: var(--white);
+            border: 2px solid transparent;
+            border-radius: 12px;
+            color: var(--ink);
+            appearance: none;
+            width: 100%;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .big-field input:focus,
+        .big-field select:focus {
+            outline: none;
+            border-color: var(--coral);
+            box-shadow: 0 0 0 4px rgba(255,77,46,0.1);
+        }
+
+        /* Category cards */
+        .categories-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            margin-bottom: 40px;
+        }
+
+        .cat-card {
+            background: var(--white);
+            border-radius: 16px;
+            padding: 28px 24px;
+            border: 2px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .cat-card:focus-within { border-color: var(--coral); }
+
+        .cat-icon {
+            font-size: 1.8rem;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .cat-card-title {
+            font-family: 'Syne', sans-serif;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 18px;
+        }
+
+        .toggle-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .toggle-item { position: relative; }
+
+        .toggle-item input[type="checkbox"] {
+            position: absolute; opacity: 0; width: 0; height: 0;
+        }
+
+        .toggle-item label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: var(--bg);
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 400;
+            color: var(--ink);
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+        }
+
+        .toggle-item label::after {
+            content: '';
+            width: 18px; height: 18px;
+            border-radius: 5px;
+            border: 2px solid var(--border);
+            flex-shrink: 0;
+            transition: all 0.15s;
+        }
+
+        .toggle-item input:checked + label {
+            background: var(--ink);
+            color: var(--white);
+        }
+
+        .toggle-item input:checked + label::after {
+            background: var(--coral);
+            border-color: var(--coral);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6l3 3 5-5' stroke='white' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+            background-size: 70%;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+
+        .toggle-item label:hover:not(input:checked + label) {
+            background: var(--border);
+        }
+
+        /* Other */
+        .other-reveal { display: none; margin-top: 10px; }
+        .other-reveal.visible { display: block; }
+
+        .other-reveal input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg);
+            border: 2px dashed var(--coral);
+            border-radius: 8px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.85rem;
+            color: var(--ink);
+        }
+
+        .other-reveal input:focus {
+            outline: none;
+            background: var(--white);
+        }
+
+        .other-reveal input::placeholder { color: var(--muted); }
+
+        /* Settings row */
+        .settings-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 48px;
+        }
+
+        /* Submit */
+        .submit-block {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .submit-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 18px 40px;
+            background: var(--coral);
+            color: var(--white);
+            border: none;
+            border-radius: 999px;
+            font-family: 'Syne', sans-serif;
+            font-size: 0.88rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+            box-shadow: 0 4px 24px rgba(255,77,46,0.3);
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(255,77,46,0.4);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.5; cursor: not-allowed;
+            transform: none; box-shadow: none;
+        }
+
+        .submit-note {
+            font-size: 0.75rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        /* Error */
+        .error-message {
+            display: none;
+            font-size: 0.82rem;
+            color: var(--coral);
+            background: rgba(255,77,46,0.08);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,77,46,0.2);
+        }
+
+        .error-message.active { display: block; }
+
+        /* Loading */
+        .loading {
+            display: none;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 80px 40px;
+            text-align: center;
+        }
+
+        .loading.active { display: block; }
+
+        .loading-headline {
+            font-family: 'Syne', sans-serif;
+            font-size: clamp(2rem, 5vw, 3.5rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 40px;
+        }
+
+        .loading-headline span { color: var(--coral); }
+
+        .progress-steps {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .progress-step {
+            padding: 10px 20px;
+            background: var(--white);
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            color: var(--muted);
+            transition: all 0.3s;
+        }
+
+        .progress-step.active {
+            background: var(--coral);
+            color: var(--white);
+            box-shadow: 0 4px 16px rgba(255,77,46,0.3);
+        }
+
+        .progress-step.done {
+            background: var(--teal);
+            color: var(--white);
+        }
+
+        /* Results */
+        .result-container {
+            display: none;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 40px 100px;
+        }
+
+        .result-container.active { display: block; }
+
+        .result-header {
+            background: var(--ink);
+            color: var(--white);
+            border-radius: 16px 16px 0 0;
+            padding: 24px 28px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .result-header h2 {
+            font-family: 'Syne', sans-serif;
+            font-size: 1.4rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }
+
+        .result-header p {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.5);
+            margin-top: 4px;
+        }
+
+        .result-btns { display: flex; gap: 10px; }
+
+        .result-btns button {
+            padding: 9px 20px;
+            border-radius: 999px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.78rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+
+        .result-btns button:first-child {
+            background: var(--coral);
+            color: var(--white);
+        }
+
+        .result-btns button:last-child {
+            background: rgba(255,255,255,0.15);
+            color: var(--white);
+        }
+
+        .result-btns button:hover { opacity: 0.85; }
+
+        .result-preview {
+            width: 100%;
+            height: 680px;
+            border: none;
+            border-radius: 0 0 16px 16px;
+        }
+
+        @media (max-width: 768px) {
+            .categories-grid { grid-template-columns: 1fr; }
+            .basics-row, .settings-row { grid-template-columns: 1fr; }
+            .hero-bottom { flex-direction: column; }
+            .hero-stats { justify-content: flex-start; }
+            nav { padding: 16px 20px; }
+            .hero, .form-section { padding-left: 20px; padding-right: 20px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- NAV -->
+    <nav>
+        <div class="nav-logo">Trip<span>Master</span></div>
+        <button class="nav-pill" onclick="document.querySelector('.form-section').scrollIntoView({behavior:'smooth'})">
+            Plan a Trip →
+        </button>
+    </nav>
+
+    <!-- HERO -->
+    <section class="hero">
+        <div class="hero-tag">
+            <span class="hero-tag-dot"></span>
+            AI-Powered Travel Planning
+        </div>
+        <h1 class="hero-headline">
+            <span class="line1">Discover</span><br>
+            <span class="line2">every</span><br>
+            <span class="line3">corner.</span>
+        </h1>
+        <div class="hero-bottom">
+            <p class="hero-dek">Your personal AI travel team finds the perfect shots, best meals, and unmissable experiences — all in under a minute.</p>
+            <div class="hero-stats">
+                <div class="stat">
+                    <div class="stat-num coral">3×</div>
+                    <div class="stat-label">Faster</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-num teal">AI</div>
+                    <div class="stat-label">Powered</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-num">100%</div>
+                    <div class="stat-label">Personal</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FORM -->
+    <section class="form-section">
+        <p class="form-eyebrow">→ Build your guide</p>
+
+        <form id="tripForm">
+            <div class="basics-row">
+                <div class="big-field">
+                    <label for="location">Where are you going?</label>
+                    <input type="text" id="location" placeholder="Barcelona, Spain" required>
+                </div>
+                <div class="big-field">
+                    <label for="duration">How many days?</label>
+                    <input type="number" id="duration" min="1" max="14" value="3" required>
+                </div>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+
+            <div class="categories-grid">
+                <!-- Photography -->
+                <div class="cat-card">
+                    <span class="cat-icon">📸</span>
+                    <p class="cat-card-title">Photography</p>
+                    <div class="toggle-list">
+                        <div class="toggle-item"><input type="checkbox" id="p1" name="photo_interests" value="Architecture & Buildings"><label for="p1">Architecture</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="p2" name="photo_interests" value="Urban & Street Photography"><label for="p2">Urban & Street</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="p3" name="photo_interests" value="Sunrise & Sunset (Golden Hour)"><label for="p3">Golden Hour</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="p4" name="photo_interests" value="Landscapes & Nature"><label for="p4">Landscapes</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="p5" name="photo_interests" value="other" onchange="toggleOther(this,'photo_other_text')"><label for="p5">Other</label></div>
+                        <div class="other-reveal" id="photo_other_text_wrapper">
+                            <input type="text" id="photo_other_text" placeholder="e.g., Bridges, Wildlife...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dining -->
+                <div class="cat-card">
+                    <span class="cat-icon">🍽️</span>
+                    <p class="cat-card-title">Dining</p>
+                    <div class="toggle-list">
+                        <div class="toggle-item"><input type="checkbox" id="c1" name="cuisines" value="Traditional Local Cuisine" checked><label for="c1">Local Cuisine</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="c2" name="cuisines" value="Street Food & Casual"><label for="c2">Street Food</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="c3" name="cuisines" value="Fine Dining & Upscale"><label for="c3">Fine Dining</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="c4" name="cuisines" value="Fusion & Modern"><label for="c4">Fusion & Modern</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="c5" name="cuisines" value="other" onchange="toggleOther(this,'cuisine_other_text')"><label for="c5">Other</label></div>
+                        <div class="other-reveal" id="cuisine_other_text_wrapper">
+                            <input type="text" id="cuisine_other_text" placeholder="e.g., Thai, Lebanese...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Attractions -->
+                <div class="cat-card">
+                    <span class="cat-icon">🏛️</span>
+                    <p class="cat-card-title">Attractions</p>
+                    <div class="toggle-list">
+                        <div class="toggle-item"><input type="checkbox" id="a1" name="attractions" value="Historical & Cultural Sites"><label for="a1">Historical</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="a2" name="attractions" value="Art, Museums & Galleries"><label for="a2">Art & Museums</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="a3" name="attractions" value="Shopping & Neighborhoods"><label for="a3">Shopping</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="a4" name="attractions" value="Nature, Parks & Gardens"><label for="a4">Nature & Parks</label></div>
+                        <div class="toggle-item"><input type="checkbox" id="a5" name="attractions" value="other" onchange="toggleOther(this,'attr_other_text')"><label for="a5">Other</label></div>
+                        <div class="other-reveal" id="attr_other_text_wrapper">
+                            <input type="text" id="attr_other_text" placeholder="e.g., Wineries, Beaches...">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-row">
+                <div class="big-field">
+                    <label for="budget">Budget Range</label>
+                    <select id="budget" required>
+                        <option value="">Select budget...</option>
+                        <option value="Budget-Conscious">Budget-Conscious</option>
+                        <option value="Moderate" selected>Moderate</option>
+                        <option value="Upscale">Upscale</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+                <div class="big-field">
+                    <label for="distance">Travel Radius</label>
+                    <select id="distance" required>
+                        <option value="">Select radius...</option>
+                        <option value="City Center Only">City Center Only</option>
+                        <option value="Up to 15 minutes" selected>Up to 15 minutes</option>
+                        <option value="Up to 30 minutes">Up to 30 minutes</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="submit-block">
+                <button type="submit" class="submit-btn" id="submitBtn">
+                    Generate My Guide ✦
+                </button>
+                <p class="submit-note">Powered by Claude AI<br>Results in under a minute</p>
+            </div>
+        </form>
+    </section>
+
+    <!-- LOADING -->
+    <div class="loading" id="loading">
+        <p class="loading-headline">Finding your<br><span>perfect trip…</span></p>
+        <div class="progress-steps">
+            <div class="progress-step" id="step-photos">📸 Photo Scout</div>
+            <div class="progress-step" id="step-restaurants">🍽 Restaurant Scout</div>
+            <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
+            <div class="progress-step" id="step-building">📄 Building Guide</div>
+        </div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="result-container" id="resultContainer">
+        <div class="result-header">
+            <div>
+                <h2 id="resultTitle">Your Guide</h2>
+                <p id="resultSubtitle"></p>
+            </div>
+            <div class="result-btns">
+                <button onclick="printGuide()">🖨️ Save as PDF</button>
+                <button onclick="resetForm()">↩ Start Over</button>
+            </div>
+        </div>
+        <iframe id="previewFrame" class="result-preview"></iframe>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5001';
+        const MAX_LOCATION_LENGTH = 100;
+        const MIN_DURATION = 1;
+        const MAX_DURATION = 14;
+
+        function toggleOther(checkbox, textId) {
+            const wrapper = document.getElementById(textId + '_wrapper');
+            const input = document.getElementById(textId);
+            if (checkbox.checked) { wrapper.classList.add('visible'); input.focus(); }
+            else { wrapper.classList.remove('visible'); input.value = ''; }
+        }
+
+        function getGroupValues(name, otherTextId) {
+            return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`))
+                .map(cb => cb.value === 'other' ? (document.getElementById(otherTextId).value.trim() || null) : cb.value)
+                .filter(Boolean);
+        }
+
+        let progressInterval = null;
+
+        function startProgressAnimation() {
+            const steps = ['step-photos','step-restaurants','step-attractions','step-building'];
+            let current = 0;
+            steps.forEach(id => document.getElementById(id).className = 'progress-step');
+            progressInterval = setInterval(() => {
+                if (current < steps.length) {
+                    if (current > 0) document.getElementById(steps[current-1]).className = 'progress-step done';
+                    document.getElementById(steps[current]).className = 'progress-step active';
+                    current++;
+                }
+            }, 8000);
+        }
+
+        function stopProgressAnimation(success) {
+            clearInterval(progressInterval); progressInterval = null;
+            ['step-photos','step-restaurants','step-attractions','step-building'].forEach(id =>
+                document.getElementById(id).className = success ? 'progress-step done' : 'progress-step');
+        }
+
+        document.getElementById('tripForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const photoInterests = getGroupValues('photo_interests','photo_other_text');
+            const cuisines = getGroupValues('cuisines','cuisine_other_text');
+            const attractions = getGroupValues('attractions','attr_other_text');
+
+            if (!photoInterests.length || !cuisines.length || !attractions.length)
+                return showError('Please select at least one option in each category');
+            if (document.getElementById('p5').checked && !document.getElementById('photo_other_text').value.trim())
+                return showError('Please describe your other photography interest, or uncheck "Other"');
+            if (document.getElementById('c5').checked && !document.getElementById('cuisine_other_text').value.trim())
+                return showError('Please describe your other dining preference, or uncheck "Other"');
+            if (document.getElementById('a5').checked && !document.getElementById('attr_other_text').value.trim())
+                return showError('Please describe your other attraction interest, or uncheck "Other"');
+
+            const location = document.getElementById('location').value.trim();
+            if (!location) return showError('Please enter a location');
+            if (location.length > MAX_LOCATION_LENGTH) return showError(`Location must be ${MAX_LOCATION_LENGTH} characters or fewer`);
+            const duration = parseInt(document.getElementById('duration').value, 10);
+            if (isNaN(duration) || duration < MIN_DURATION || duration > MAX_DURATION)
+                return showError(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} days`);
+            const budget = document.getElementById('budget').value;
+            const distance = document.getElementById('distance').value;
+            if (!budget || !distance) return showError('Please select a budget and travel distance');
+
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            startProgressAnimation();
+
+            try {
+                const response = await fetch(`${API_URL}/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ location, duration, photo_interests: photoInterests.join(', '),
+                        cuisines: cuisines.join(', '), attractions: attractions.join(', '), budget, distance })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Failed to generate guide');
+                stopProgressAnimation(true);
+                displayResults(result);
+            } catch (err) {
+                stopProgressAnimation(false);
+                showError(`Error: ${err.message}`);
+            } finally {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('submitBtn').disabled = false;
+            }
+        });
+
+        function displayResults(result) {
+            document.getElementById('resultTitle').textContent = `${result.location} Guide`;
+            document.getElementById('resultSubtitle').textContent =
+                `${result.duration} days · ${result.photo_count} photo spots · ${result.restaurant_count} restaurants · ${result.attraction_count} attractions`;
+            document.getElementById('previewFrame').srcdoc = result.html;
+            window.currentLocation = result.location;
+            document.getElementById('resultContainer').classList.add('active');
+            document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function printGuide() {
+            const iframe = document.getElementById('previewFrame');
+            if (iframe.contentWindow) iframe.contentWindow.print();
+        }
+
+        function resetForm() {
+            document.getElementById('tripForm').reset();
+            ['photo_other_text','cuisine_other_text','attr_other_text'].forEach(id => {
+                document.getElementById(id).value = '';
+                document.getElementById(id+'_wrapper').classList.remove('visible');
+            });
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            document.getElementById('location').focus();
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.classList.add('active');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>

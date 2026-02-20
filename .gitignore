@@ -1,0 +1,58 @@
+# ── Secrets & environment ────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# ── Database files ───────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# ── Backup / scratch files ───────────────────────────────────────────────────
+*-backup.*
+*-backup/
+*.bak
+*.orig
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Build / distribution ─────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ── Claude Code internal files ───────────────────────────────────────────────
+.claude/

@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trip Master — Theme 2: Editorial</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg:       #f5f2ee;
+            --white:    #ffffff;
+            --ink:      #1a1a1a;
+            --ink-2:    #4a4a4a;
+            --rule:     #d8d3cc;
+            --accent:   #c0392b;
+            --accent-l: rgba(192,57,43,0.08);
+            --sand:     #e8e2d9;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--ink);
+            min-height: 100vh;
+        }
+
+        /* ── MASTHEAD ── */
+        .masthead {
+            border-bottom: 3px solid var(--ink);
+            padding: 20px 48px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .masthead-brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .masthead-issue {
+            font-size: 0.68rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        /* ── HERO SPREAD ── */
+        .hero-spread {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            min-height: 70vh;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .hero-text {
+            padding: 64px 48px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            border-right: 1px solid var(--rule);
+        }
+
+        .kicker {
+            font-size: 0.68rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--accent);
+            font-weight: 600;
+            margin-bottom: 24px;
+        }
+
+        .hero-headline {
+            font-family: 'Playfair Display', serif;
+            font-size: clamp(3rem, 5vw, 5.5rem);
+            font-weight: 700;
+            line-height: 1.0;
+            letter-spacing: -0.03em;
+            margin-bottom: 24px;
+        }
+
+        .hero-headline em {
+            font-style: italic;
+            color: var(--accent);
+        }
+
+        .hero-dek {
+            font-size: 1rem;
+            line-height: 1.75;
+            color: var(--ink-2);
+            max-width: 380px;
+            margin-bottom: 40px;
+        }
+
+        .hero-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .hero-cta-arrow {
+            width: 32px;
+            height: 1px;
+            background: var(--accent);
+            position: relative;
+            transition: width 0.3s;
+        }
+
+        .hero-cta-arrow::after {
+            content: '';
+            position: absolute;
+            right: 0; top: -3px;
+            width: 7px; height: 7px;
+            border-right: 1px solid var(--accent);
+            border-top: 1px solid var(--accent);
+            transform: rotate(45deg);
+        }
+
+        .hero-cta:hover .hero-cta-arrow { width: 48px; }
+
+        .hero-visual {
+            background: var(--sand);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* SVG illustration placeholder */
+        .hero-visual svg {
+            width: 60%;
+            opacity: 0.25;
+        }
+
+        .hero-visual-label {
+            position: absolute;
+            bottom: 24px; right: 24px;
+            font-size: 0.65rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        /* ── FORM ── */
+        .form-wrap {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 72px 48px 100px;
+        }
+
+        .form-header {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 24px;
+            align-items: baseline;
+            margin-bottom: 48px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .form-issue-number {
+            font-family: 'Playfair Display', serif;
+            font-size: 4rem;
+            font-weight: 700;
+            color: var(--rule);
+            line-height: 1;
+        }
+
+        .form-title-group h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.8rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .form-title-group p {
+            font-size: 0.85rem;
+            color: var(--ink-2);
+            margin-top: 6px;
+        }
+
+        /* Fields */
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 36px;
+        }
+
+        .field { display: flex; flex-direction: column; gap: 8px; }
+
+        .field label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        .field input,
+        .field select {
+            background: var(--white);
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            padding: 13px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            color: var(--ink);
+            appearance: none;
+            width: 100%;
+            border-radius: 0;
+            transition: border-color 0.2s;
+        }
+
+        .field input:focus,
+        .field select:focus {
+            outline: none;
+            border-bottom-color: var(--accent);
+        }
+
+        /* Category sections */
+        .cat-section {
+            margin-bottom: 40px;
+            padding-bottom: 40px;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .cat-section:last-of-type { border-bottom: none; }
+
+        .cat-header {
+            display: flex;
+            align-items: baseline;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .cat-number {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--rule);
+        }
+
+        .cat-title {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+        }
+
+        .pill-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .pill-item { position: relative; }
+
+        .pill-item input[type="checkbox"] {
+            position: absolute; opacity: 0; width: 0; height: 0;
+        }
+
+        .pill-item label {
+            display: inline-block;
+            padding: 9px 20px;
+            background: var(--white);
+            border: 1px solid var(--rule);
+            font-size: 0.82rem;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+        }
+
+        .pill-item input:checked + label {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: var(--white);
+        }
+
+        .pill-item label:hover {
+            border-color: var(--ink);
+            color: var(--ink);
+        }
+
+        /* Other input */
+        .other-reveal { display: none; margin-top: 12px; }
+        .other-reveal.visible { display: block; }
+
+        .other-reveal input {
+            background: var(--white);
+            border: 1px dashed var(--rule);
+            border-bottom: 2px dashed var(--accent);
+            padding: 11px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.88rem;
+            color: var(--ink);
+            width: 100%;
+            border-radius: 0;
+        }
+
+        .other-reveal input:focus {
+            outline: none;
+            border-bottom-color: var(--accent);
+            border-bottom-style: solid;
+        }
+
+        .other-reveal input::placeholder { color: var(--rule); }
+
+        /* Submit */
+        .submit-row {
+            margin-top: 48px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .submit-btn {
+            padding: 16px 48px;
+            background: var(--ink);
+            color: var(--white);
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .submit-btn:hover { background: var(--accent); }
+
+        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .submit-btn:disabled:hover { background: var(--ink); }
+
+        .submit-note {
+            font-size: 0.75rem;
+            color: var(--ink-2);
+            line-height: 1.5;
+        }
+
+        /* Error */
+        .error-message {
+            display: none;
+            font-size: 0.82rem;
+            color: var(--accent);
+            padding: 12px 16px;
+            background: var(--accent-l);
+            border-left: 3px solid var(--accent);
+            margin-top: 20px;
+        }
+
+        .error-message.active { display: block; }
+
+        /* Loading */
+        .loading {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 80px 48px;
+            border-top: 1px solid var(--rule);
+        }
+
+        .loading.active { display: flex; gap: 48px; align-items: flex-start; }
+
+        .loading-headline {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.2rem;
+            font-weight: 400;
+            font-style: italic;
+            line-height: 1.2;
+            flex: 1;
+        }
+
+        .progress-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 200px;
+        }
+
+        .progress-step {
+            font-size: 0.75rem;
+            letter-spacing: 0.08em;
+            color: var(--rule);
+            padding: 8px 12px;
+            border-left: 2px solid var(--rule);
+            transition: all 0.4s;
+        }
+
+        .progress-step.active {
+            border-color: var(--accent);
+            color: var(--ink);
+        }
+
+        .progress-step.done {
+            border-color: #27ae60;
+            color: #27ae60;
+        }
+
+        /* Results */
+        .result-container {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 48px 80px;
+        }
+
+        .result-container.active { display: block; }
+
+        .result-masthead {
+            border-top: 3px solid var(--ink);
+            border-bottom: 1px solid var(--rule);
+            padding: 20px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .result-masthead h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+        }
+
+        .result-masthead p {
+            font-size: 0.72rem;
+            color: var(--ink-2);
+            letter-spacing: 0.05em;
+            margin-top: 3px;
+        }
+
+        .result-btns { display: flex; gap: 10px; }
+
+        .result-btns button {
+            padding: 9px 20px;
+            background: transparent;
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .result-btns button:hover {
+            background: var(--ink);
+            color: var(--white);
+            border-color: var(--ink);
+        }
+
+        .result-preview {
+            width: 100%;
+            height: 680px;
+            border: 1px solid var(--rule);
+        }
+
+        @media (max-width: 700px) {
+            .hero-spread { grid-template-columns: 1fr; }
+            .hero-visual { display: none; }
+            .masthead { padding: 16px 24px; }
+            .form-wrap { padding: 48px 24px 80px; }
+            .field-row { grid-template-columns: 1fr; }
+            .loading.active { flex-direction: column; gap: 24px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- MASTHEAD -->
+    <header class="masthead">
+        <div class="masthead-brand">Trip Master</div>
+        <div class="masthead-issue">AI Travel Intelligence · Est. 2025</div>
+    </header>
+
+    <!-- HERO SPREAD -->
+    <section class="hero-spread">
+        <div class="hero-text">
+            <p class="kicker">Bespoke Travel Guides</p>
+            <h1 class="hero-headline">The world<br>is <em>yours</em><br>to explore.</h1>
+            <p class="hero-dek">Photography locations, curated restaurants, and the attractions worth your time — all generated in under a minute.</p>
+            <span class="hero-cta" onclick="document.querySelector('.form-wrap').scrollIntoView({behavior:'smooth'})">
+                Build your guide
+                <span class="hero-cta-arrow"></span>
+            </span>
+        </div>
+        <div class="hero-visual">
+            <!-- Abstract compass / globe SVG -->
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="100" cy="100" r="90" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="60" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="30" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="100" y1="10" x2="100" y2="190" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="10" y1="100" x2="190" y2="100" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="36" y1="36" x2="164" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <line x1="164" y1="36" x2="36" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <polygon points="100,10 106,95 100,100 94,95" fill="#1a1a1a"/>
+                <polygon points="100,190 94,105 100,100 106,105" fill="#1a1a1a" opacity="0.3"/>
+            </svg>
+            <span class="hero-visual-label">Your compass awaits</span>
+        </div>
+    </section>
+
+    <!-- FORM -->
+    <section class="form-wrap">
+        <div class="form-header">
+            <div class="form-issue-number">01</div>
+            <div class="form-title-group">
+                <h2>Plan Your Journey</h2>
+                <p>Tell us about your trip and we'll do the rest.</p>
+            </div>
+        </div>
+
+        <form id="tripForm">
+            <div class="field-row">
+                <div class="field">
+                    <label for="location">Destination</label>
+                    <input type="text" id="location" placeholder="e.g., Barcelona, Spain" required>
+                </div>
+                <div class="field">
+                    <label for="duration">Duration (days, 1–14)</label>
+                    <input type="number" id="duration" min="1" max="14" value="3" required>
+                </div>
+            </div>
+
+            <!-- Photography -->
+            <div class="cat-section">
+                <div class="cat-header">
+                    <span class="cat-number">I</span>
+                    <span class="cat-title">Photography Interests</span>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="p1" name="photo_interests" value="Architecture & Buildings"><label for="p1">Architecture</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p2" name="photo_interests" value="Urban & Street Photography"><label for="p2">Urban & Street</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p3" name="photo_interests" value="Sunrise & Sunset (Golden Hour)"><label for="p3">Golden Hour</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p4" name="photo_interests" value="Landscapes & Nature"><label for="p4">Landscapes</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p5" name="photo_interests" value="other" onchange="toggleOther(this,'photo_other_text')"><label for="p5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="photo_other_text_wrapper">
+                    <input type="text" id="photo_other_text" placeholder="e.g., Bridges, Wildlife, Industrial...">
+                </div>
+            </div>
+
+            <!-- Dining -->
+            <div class="cat-section">
+                <div class="cat-header">
+                    <span class="cat-number">II</span>
+                    <span class="cat-title">Dining Preferences</span>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="c1" name="cuisines" value="Traditional Local Cuisine" checked><label for="c1">Local Cuisine</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c2" name="cuisines" value="Street Food & Casual"><label for="c2">Street Food</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c3" name="cuisines" value="Fine Dining & Upscale"><label for="c3">Fine Dining</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c4" name="cuisines" value="Fusion & Modern"><label for="c4">Fusion & Modern</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c5" name="cuisines" value="other" onchange="toggleOther(this,'cuisine_other_text')"><label for="c5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="cuisine_other_text_wrapper">
+                    <input type="text" id="cuisine_other_text" placeholder="e.g., Thai, Lebanese, Vegan...">
+                </div>
+            </div>
+
+            <!-- Attractions -->
+            <div class="cat-section">
+                <div class="cat-header">
+                    <span class="cat-number">III</span>
+                    <span class="cat-title">Attraction Categories</span>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="a1" name="attractions" value="Historical & Cultural Sites"><label for="a1">Historical & Cultural</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a2" name="attractions" value="Art, Museums & Galleries"><label for="a2">Art & Museums</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a3" name="attractions" value="Shopping & Neighborhoods"><label for="a3">Shopping & Districts</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a4" name="attractions" value="Nature, Parks & Gardens"><label for="a4">Nature & Parks</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a5" name="attractions" value="other" onchange="toggleOther(this,'attr_other_text')"><label for="a5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="attr_other_text_wrapper">
+                    <input type="text" id="attr_other_text" placeholder="e.g., Wineries, Beaches, Live Music...">
+                </div>
+            </div>
+
+            <!-- Budget + Distance -->
+            <div class="field-row">
+                <div class="field">
+                    <label for="budget">Budget Range</label>
+                    <select id="budget" required>
+                        <option value="">Select...</option>
+                        <option value="Budget-Conscious">Budget-Conscious</option>
+                        <option value="Moderate" selected>Moderate</option>
+                        <option value="Upscale">Upscale</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="distance">Travel Radius</label>
+                    <select id="distance" required>
+                        <option value="">Select...</option>
+                        <option value="City Center Only">City Center Only</option>
+                        <option value="Up to 15 minutes" selected>Up to 15 minutes</option>
+                        <option value="Up to 30 minutes">Up to 30 minutes</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+
+            <div class="submit-row">
+                <button type="submit" class="submit-btn" id="submitBtn">Generate Guide</button>
+                <p class="submit-note">Powered by Claude Haiku · Results in under a minute</p>
+            </div>
+        </form>
+    </section>
+
+    <!-- LOADING -->
+    <div class="loading" id="loading">
+        <p class="loading-headline">Assembling your<br>perfect itinerary…</p>
+        <div class="progress-steps">
+            <div class="progress-step" id="step-photos">📸 Photo Scout</div>
+            <div class="progress-step" id="step-restaurants">🍽 Restaurant Scout</div>
+            <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
+            <div class="progress-step" id="step-building">📄 Building Guide</div>
+        </div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="result-container" id="resultContainer">
+        <div class="result-masthead">
+            <div>
+                <h2 id="resultTitle">Your Guide</h2>
+                <p id="resultSubtitle"></p>
+            </div>
+            <div class="result-btns">
+                <button onclick="printGuide()">Save as PDF</button>
+                <button onclick="resetForm()">Start Over</button>
+            </div>
+        </div>
+        <iframe id="previewFrame" class="result-preview"></iframe>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5001';
+        const MAX_LOCATION_LENGTH = 100;
+        const MIN_DURATION = 1;
+        const MAX_DURATION = 14;
+
+        function toggleOther(checkbox, textId) {
+            const wrapper = document.getElementById(textId + '_wrapper');
+            const input = document.getElementById(textId);
+            if (checkbox.checked) { wrapper.classList.add('visible'); input.focus(); }
+            else { wrapper.classList.remove('visible'); input.value = ''; }
+        }
+
+        function getGroupValues(name, otherTextId) {
+            return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`))
+                .map(cb => cb.value === 'other' ? (document.getElementById(otherTextId).value.trim() || null) : cb.value)
+                .filter(Boolean);
+        }
+
+        let progressInterval = null;
+
+        function startProgressAnimation() {
+            const steps = ['step-photos','step-restaurants','step-attractions','step-building'];
+            let current = 0;
+            steps.forEach(id => document.getElementById(id).className = 'progress-step');
+            progressInterval = setInterval(() => {
+                if (current < steps.length) {
+                    if (current > 0) document.getElementById(steps[current-1]).className = 'progress-step done';
+                    document.getElementById(steps[current]).className = 'progress-step active';
+                    current++;
+                }
+            }, 8000);
+        }
+
+        function stopProgressAnimation(success) {
+            clearInterval(progressInterval); progressInterval = null;
+            ['step-photos','step-restaurants','step-attractions','step-building'].forEach(id =>
+                document.getElementById(id).className = success ? 'progress-step done' : 'progress-step');
+        }
+
+        document.getElementById('tripForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const photoInterests = getGroupValues('photo_interests','photo_other_text');
+            const cuisines = getGroupValues('cuisines','cuisine_other_text');
+            const attractions = getGroupValues('attractions','attr_other_text');
+
+            if (!photoInterests.length || !cuisines.length || !attractions.length)
+                return showError('Please select at least one option in each category');
+            if (document.getElementById('p5').checked && !document.getElementById('photo_other_text').value.trim())
+                return showError('Please describe your other photography interest, or uncheck "Other"');
+            if (document.getElementById('c5').checked && !document.getElementById('cuisine_other_text').value.trim())
+                return showError('Please describe your other dining preference, or uncheck "Other"');
+            if (document.getElementById('a5').checked && !document.getElementById('attr_other_text').value.trim())
+                return showError('Please describe your other attraction interest, or uncheck "Other"');
+
+            const location = document.getElementById('location').value.trim();
+            if (!location) return showError('Please enter a location');
+            if (location.length > MAX_LOCATION_LENGTH) return showError(`Location must be ${MAX_LOCATION_LENGTH} characters or fewer`);
+            const duration = parseInt(document.getElementById('duration').value, 10);
+            if (isNaN(duration) || duration < MIN_DURATION || duration > MAX_DURATION)
+                return showError(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} days`);
+            const budget = document.getElementById('budget').value;
+            const distance = document.getElementById('distance').value;
+            if (!budget || !distance) return showError('Please select a budget and travel distance');
+
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            startProgressAnimation();
+
+            try {
+                const response = await fetch(`${API_URL}/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ location, duration, photo_interests: photoInterests.join(', '),
+                        cuisines: cuisines.join(', '), attractions: attractions.join(', '), budget, distance })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Failed to generate guide');
+                stopProgressAnimation(true);
+                displayResults(result);
+            } catch (err) {
+                stopProgressAnimation(false);
+                showError(`Error: ${err.message}`);
+            } finally {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('submitBtn').disabled = false;
+            }
+        });
+
+        function displayResults(result) {
+            document.getElementById('resultTitle').textContent = `${result.location} Guide`;
+            document.getElementById('resultSubtitle').textContent =
+                `${result.duration} days · ${result.photo_count} photo spots · ${result.restaurant_count} restaurants · ${result.attraction_count} attractions`;
+            document.getElementById('previewFrame').srcdoc = result.html;
+            window.currentLocation = result.location;
+            document.getElementById('resultContainer').classList.add('active');
+            document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function printGuide() {
+            const iframe = document.getElementById('previewFrame');
+            if (iframe.contentWindow) iframe.contentWindow.print();
+        }
+
+        function resetForm() {
+            document.getElementById('tripForm').reset();
+            ['photo_other_text','cuisine_other_text','attr_other_text'].forEach(id => {
+                document.getElementById(id).value = '';
+                document.getElementById(id+'_wrapper').classList.remove('visible');
+            });
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            document.getElementById('location').focus();
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.classList.add('active');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>

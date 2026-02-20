@@ -1,0 +1,2406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trip Master — Bespoke Travel Guides</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg:       #f5f2ee;
+            --white:    #ffffff;
+            --ink:      #1a1a1a;
+            --ink-2:    #4a4a4a;
+            --rule:     #d8d3cc;
+            --accent:   #c0392b;
+            --accent-l: rgba(192,57,43,0.08);
+            --sand:     #e8e2d9;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--ink);
+            min-height: 100vh;
+            font-weight: 300;
+        }
+
+        /* ── MASTHEAD ── */
+        .masthead {
+            border-bottom: 3px solid var(--ink);
+            padding: 20px 48px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--white);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .masthead-brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.4rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .masthead-issue {
+            font-size: 0.65rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        /* ── HERO SPREAD ── */
+        .hero-spread {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            min-height: 72vh;
+            border-bottom: 1px solid var(--rule);
+            background: var(--white);
+        }
+
+        .hero-text {
+            padding: 72px 56px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            border-right: 1px solid var(--rule);
+        }
+
+        .kicker {
+            font-size: 0.65rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: var(--accent);
+            font-weight: 600;
+            margin-bottom: 24px;
+        }
+
+        .hero-headline {
+            font-family: 'Playfair Display', serif;
+            font-size: clamp(2.8rem, 5vw, 5.5rem);
+            font-weight: 700;
+            line-height: 0.95;
+            letter-spacing: -0.03em;
+            margin-bottom: 28px;
+        }
+
+        .hero-headline em {
+            font-style: italic;
+            color: var(--accent);
+        }
+
+        .hero-dek {
+            font-size: 0.95rem;
+            line-height: 1.75;
+            color: var(--ink-2);
+            max-width: 380px;
+            margin-bottom: 40px;
+        }
+
+        .hero-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 0;
+        }
+
+        .hero-cta-arrow {
+            width: 32px;
+            height: 1px;
+            background: var(--accent);
+            position: relative;
+            transition: width 0.3s;
+        }
+
+        .hero-cta-arrow::after {
+            content: '';
+            position: absolute;
+            right: 0; top: -3px;
+            width: 7px; height: 7px;
+            border-right: 1.5px solid var(--accent);
+            border-top: 1.5px solid var(--accent);
+            transform: rotate(45deg);
+        }
+
+        .hero-cta:hover .hero-cta-arrow { width: 48px; }
+
+        .hero-visual {
+            background: var(--sand);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .hero-visual svg {
+            width: 55%;
+            opacity: 0.2;
+        }
+
+        .hero-visual-label {
+            position: absolute;
+            bottom: 24px; right: 24px;
+            font-size: 0.6rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        /* ── FORM SECTION ── */
+        .form-wrap {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 72px 48px 100px;
+        }
+
+        .form-header {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 24px;
+            align-items: baseline;
+            margin-bottom: 48px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .form-issue-number {
+            font-family: 'Playfair Display', serif;
+            font-size: 4rem;
+            font-weight: 700;
+            color: var(--rule);
+            line-height: 1;
+        }
+
+        .form-title-group h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.8rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .form-title-group p {
+            font-size: 0.82rem;
+            color: var(--ink-2);
+            margin-top: 6px;
+        }
+
+        /* ── FIELDS ── */
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 36px;
+        }
+
+        .field { display: flex; flex-direction: column; gap: 8px; }
+
+        .field label {
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+
+        .field input,
+        .field select {
+            background: var(--white);
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            padding: 13px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 300;
+            color: var(--ink);
+            appearance: none;
+            width: 100%;
+            border-radius: 0;
+            transition: border-color 0.2s;
+        }
+
+        .field input:focus,
+        .field select:focus {
+            outline: none;
+            border-bottom-color: var(--accent);
+        }
+
+        .field input::placeholder { color: var(--rule); }
+
+        /* ── CATEGORY SECTIONS ── */
+        .cat-section {
+            margin-bottom: 40px;
+            padding-bottom: 40px;
+            border-bottom: 1px solid var(--rule);
+            transition: opacity 0.25s;
+        }
+
+        .cat-section.disabled .pill-grid,
+        .cat-section.disabled .other-reveal,
+        .cat-section.disabled .count-row {
+            opacity: 0.35;
+            pointer-events: none;
+        }
+
+        .cat-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .cat-number {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--rule);
+            line-height: 1;
+        }
+
+        .cat-title {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            flex: 1;
+        }
+
+        /* ── SECTION TOGGLE SWITCH ── */
+        .section-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-left: auto;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .section-toggle-label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            transition: color 0.2s;
+        }
+
+        .toggle-track {
+            width: 38px;
+            height: 20px;
+            background: var(--rule);
+            border-radius: 20px;
+            position: relative;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+
+        .toggle-thumb {
+            width: 14px;
+            height: 14px;
+            background: var(--white);
+            border-radius: 50%;
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.2s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+
+        .section-toggle.on .toggle-track { background: var(--ink); }
+        .section-toggle.on .toggle-thumb { transform: translateX(18px); }
+        .section-toggle.on .section-toggle-label { color: var(--ink); }
+
+        /* ── COUNT ROW ── */
+        .count-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-top: 16px;
+            padding: 14px 18px;
+            background: var(--white);
+            border: 1px solid var(--rule);
+        }
+
+        .count-label {
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            flex: 1;
+        }
+
+        .count-stepper {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            border: 1px solid var(--rule);
+        }
+
+        .count-btn {
+            width: 32px;
+            height: 32px;
+            background: var(--bg);
+            border: none;
+            font-size: 1.1rem;
+            font-weight: 400;
+            color: var(--ink);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+            transition: background 0.15s;
+            border-radius: 0;
+        }
+
+        .count-btn:hover { background: var(--sand); }
+
+        .count-value {
+            width: 38px;
+            text-align: center;
+            font-family: 'Playfair Display', serif;
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--ink);
+            border: none;
+            border-left: 1px solid var(--rule);
+            border-right: 1px solid var(--rule);
+            padding: 0 4px;
+            height: 32px;
+            line-height: 32px;
+            background: var(--white);
+        }
+
+        .count-hint {
+            font-size: 0.65rem;
+            color: var(--rule);
+            letter-spacing: 0.08em;
+        }
+
+        /* ── PILL SELECTORS ── */
+        .pill-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .pill-item { position: relative; }
+
+        .pill-item input[type="checkbox"] {
+            position: absolute; opacity: 0; width: 0; height: 0;
+        }
+
+        .pill-item label {
+            display: inline-block;
+            padding: 9px 20px;
+            background: var(--white);
+            border: 1px solid var(--rule);
+            font-size: 0.82rem;
+            font-weight: 400;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+        }
+
+        .pill-item input:checked + label {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: var(--white);
+        }
+
+        .pill-item label:hover {
+            border-color: var(--ink);
+            color: var(--ink);
+        }
+
+        /* ── OTHER INPUT ── */
+        .other-reveal { display: none; margin-top: 12px; }
+        .other-reveal.visible { display: block; }
+
+        .other-reveal input {
+            background: var(--white);
+            border: 1px dashed var(--rule);
+            border-bottom: 2px dashed var(--accent);
+            padding: 11px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.88rem;
+            font-weight: 300;
+            color: var(--ink);
+            width: 100%;
+            border-radius: 0;
+            transition: border-color 0.2s;
+        }
+
+        .other-reveal input:focus {
+            outline: none;
+            border-bottom-style: solid;
+            border-bottom-color: var(--accent);
+        }
+
+        .other-reveal input::placeholder { color: var(--rule); }
+
+        /* ── ERROR ── */
+        .error-message {
+            display: none;
+            font-size: 0.82rem;
+            color: var(--accent);
+            padding: 12px 16px;
+            background: var(--accent-l);
+            border-left: 3px solid var(--accent);
+            margin-bottom: 20px;
+        }
+
+        .error-message.active { display: block; }
+
+        /* ── SUBMIT ── */
+        .submit-row {
+            margin-top: 48px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .submit-btn {
+            padding: 16px 48px;
+            background: var(--ink);
+            color: var(--white);
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-radius: 0;
+        }
+
+        .submit-btn:hover { background: var(--accent); }
+
+        .submit-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            background: var(--ink) !important;
+        }
+
+        .submit-note {
+            font-size: 0.72rem;
+            color: var(--ink-2);
+            line-height: 1.6;
+        }
+
+        /* ── LOADING ── */
+        .loading {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 80px 48px;
+            border-top: 1px solid var(--rule);
+        }
+
+        .loading.active { display: flex; gap: 48px; align-items: flex-start; }
+
+        .loading-headline {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.2rem;
+            font-weight: 400;
+            font-style: italic;
+            line-height: 1.2;
+            flex: 1;
+            color: var(--ink);
+        }
+
+        .progress-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 210px;
+        }
+
+        .progress-step {
+            font-size: 0.72rem;
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            color: var(--rule);
+            padding: 8px 14px;
+            border-left: 2px solid var(--rule);
+            transition: all 0.4s;
+        }
+
+        .progress-step.active {
+            border-color: var(--accent);
+            color: var(--ink);
+        }
+
+        .progress-step.done {
+            border-color: #27ae60;
+            color: #27ae60;
+        }
+
+        /* ── RESULTS ── */
+        .result-container {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 48px 80px;
+        }
+
+        .result-container.active { display: block; }
+
+        .result-masthead {
+            border-top: 3px solid var(--ink);
+            border-bottom: 1px solid var(--rule);
+            padding: 20px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .result-masthead h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .result-masthead p {
+            font-size: 0.7rem;
+            color: var(--ink-2);
+            letter-spacing: 0.06em;
+            margin-top: 4px;
+        }
+
+        .result-btns { display: flex; gap: 10px; flex-shrink: 0; }
+
+        .result-btns button {
+            padding: 9px 22px;
+            background: transparent;
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s;
+            border-radius: 0;
+        }
+
+        .result-btns button:hover {
+            background: var(--ink);
+            color: var(--white);
+            border-color: var(--ink);
+        }
+
+        .result-preview {
+            width: 100%;
+            height: 700px;
+            border: 1px solid var(--rule);
+        }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 768px) {
+            .hero-spread { grid-template-columns: 1fr; }
+            .hero-visual { display: none; }
+            .masthead { padding: 16px 24px; }
+            .hero-text { padding: 48px 24px; }
+            .form-wrap { padding: 48px 24px 80px; }
+            .field-row { grid-template-columns: 1fr; }
+            .loading.active { flex-direction: column; gap: 24px; padding: 48px 24px; }
+            .result-container { padding: 0 24px 60px; }
+            .result-masthead { flex-direction: column; align-items: flex-start; gap: 16px; }
+        }
+
+        /* ══════════════════════════════════════════
+           REVIEW SCREEN
+           ══════════════════════════════════════════ */
+        .review-container {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 48px 80px;
+        }
+        .review-container.active { display: block; }
+
+        /* Masthead — mirrors .result-masthead */
+        .review-masthead {
+            border-top: 3px solid var(--ink);
+            border-bottom: 1px solid var(--rule);
+            padding: 20px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            gap: 20px;
+        }
+        .review-masthead h2 {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+        .review-masthead p {
+            font-size: 0.68rem;
+            color: var(--ink-2);
+            margin-top: 5px;
+            letter-spacing: 0.06em;
+        }
+
+        /* Buttons row — mirrors .result-btns */
+        .review-btns { display: flex; gap: 10px; flex-shrink: 0; }
+        .review-btns button {
+            padding: 9px 22px;
+            background: transparent;
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s;
+            border-radius: 0;
+        }
+        .review-btns button:hover { background: var(--ink); color: var(--white); border-color: var(--ink); }
+
+        /* Primary "Generate Final Guide" CTA */
+        .review-generate-btn {
+            background: var(--ink) !important;
+            color: var(--white) !important;
+            border-color: var(--ink) !important;
+            display: inline-flex !important;
+            align-items: center;
+            gap: 10px;
+        }
+        .review-generate-btn:hover {
+            background: #333 !important;
+            border-color: #333 !important;
+            color: var(--white) !important;
+        }
+        .review-generate-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        /* Count badge inside button */
+        .review-generate-count {
+            font-size: 0.6rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            background: rgba(255,255,255,0.22);
+            padding: 2px 9px;
+            border-radius: 10px;
+        }
+
+        /* ── Scout warning banner (shown when a category returned 0 results) ── */
+        .scout-warning {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            background: #fff8e6;
+            border-left: 3px solid #e6a817;
+            padding: 14px 18px;
+            margin-bottom: 16px;
+            font-size: 0.875rem;
+            line-height: 1.55;
+            color: #5a3e00;
+        }
+        .scout-warning svg {
+            flex-shrink: 0;
+            margin-top: 2px;
+            color: #e6a817;
+        }
+
+        /* ── Section panel ── */
+        .review-section {
+            margin-bottom: 32px;
+            border: 1px solid var(--rule);
+            background: var(--white);
+        }
+        .review-section-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 16px 24px;
+            border-bottom: 2px solid var(--ink);
+            background: var(--white);
+            flex-wrap: wrap;
+        }
+        .review-section-titles { flex: 1; min-width: 0; }
+        .review-section-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--ink);
+        }
+        .review-section-subtitle {
+            font-size: 0.62rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            margin-top: 3px;
+        }
+        /* "X of Y selected" */
+        .review-section-count {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            white-space: nowrap;
+        }
+        .review-section-count strong {
+            font-family: 'Playfair Display', serif;
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--ink);
+            letter-spacing: 0;
+        }
+        /* All / None links */
+        .review-bulk-actions { display: flex; gap: 8px; flex-shrink: 0; }
+        .review-bulk-btn {
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            font-family: 'Inter', sans-serif;
+        }
+        .review-bulk-btn:hover { color: var(--ink); }
+        .review-bulk-sep {
+            font-size: 0.62rem;
+            color: var(--rule);
+            line-height: 1;
+            align-self: center;
+        }
+
+        /* ── Day group ── */
+        .review-day-group { padding: 0 24px; }
+        .review-day-label {
+            font-size: 0.6rem;
+            font-weight: 700;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: #888;
+            padding: 13px 0 7px;
+            border-bottom: 1px solid var(--sand);
+        }
+
+        /* ── Item row ── */
+        .review-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--sand);
+            transition: opacity 0.18s;
+        }
+        .review-item:last-child { border-bottom: none; }
+        .review-item.rejected { opacity: 0.35; }
+        .review-item.rejected .review-item-name { text-decoration: line-through; color: var(--ink-2); }
+
+        /* Toggle — matches existing .toggle-track / .toggle-thumb pattern */
+        .review-item-toggle {
+            flex-shrink: 0;
+            width: 38px;
+            height: 20px;
+            background: var(--ink);
+            border-radius: 20px;
+            position: relative;
+            cursor: pointer;
+            border: none;
+            padding: 0;
+            transition: background 0.18s;
+        }
+        .review-item-toggle::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: var(--white);
+            border-radius: 50%;
+            top: 3px;
+            left: 21px;
+            transition: left 0.18s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.22);
+        }
+        .review-item-toggle.off { background: var(--rule); }
+        .review-item-toggle.off::after { left: 3px; }
+
+        /* Item name */
+        .review-item-name {
+            font-family: 'Playfair Display', serif;
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--ink);
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            letter-spacing: -0.01em;
+        }
+
+        /* Tags — mirror .item-card-tag */
+        .review-item-tags { display: flex; gap: 5px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
+        .review-item-tag {
+            display: inline-block;
+            padding: 3px 9px;
+            background: var(--sand);
+            font-size: 0.58rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            white-space: nowrap;
+        }
+        .review-item-tag.accent { background: var(--ink); color: var(--white); }
+
+        /* Verification dot */
+        .review-status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .review-status-dot.verified   { background: #27ae60; }
+        .review-status-dot.unverified { background: var(--rule); }
+
+        /* ── Finalizing state ── */
+        .finalizing {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 80px 48px;
+            border-top: 1px solid var(--rule);
+            text-align: center;
+        }
+        .finalizing.active { display: block; }
+        .finalizing .loading-headline {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.4rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            line-height: 1.2;
+            color: var(--ink);
+        }
+        .finalizing-sub {
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            margin-top: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .review-container { padding: 0 24px 60px; }
+            .review-masthead { flex-direction: column; align-items: flex-start; }
+            .review-section-header { flex-direction: column; align-items: flex-start; }
+        }
+
+        /* ══════════════════════════════════════════
+           LOGIN SCREEN
+           ══════════════════════════════════════════ */
+        .login-screen {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 999;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-screen.active { display: flex; }
+        .login-box {
+            background: var(--white);
+            border-top: 3px solid var(--ink);
+            padding: 52px 56px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.10);
+        }
+        .login-brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 8px;
+        }
+        .login-kicker {
+            font-size: 0.65rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            margin-bottom: 40px;
+        }
+        .login-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+        .login-field label {
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+        .login-field input {
+            background: var(--bg);
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            padding: 13px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 300;
+            color: var(--ink);
+            width: 100%;
+            border-radius: 0;
+            transition: border-color 0.2s;
+        }
+        .login-field input:focus { outline: none; border-bottom-color: var(--accent); }
+        .login-btn {
+            width: 100%;
+            margin-top: 8px;
+            padding: 14px;
+            background: var(--ink);
+            color: var(--white);
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .login-btn:hover  { background: var(--accent); }
+        .login-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .login-error {
+            display: none;
+            margin-top: 16px;
+            font-size: 0.82rem;
+            color: var(--accent);
+            padding: 10px 14px;
+            background: var(--accent-l);
+            border-left: 3px solid var(--accent);
+        }
+        .login-error.active { display: block; }
+
+        /* ══════════════════════════════════════════
+           MASTHEAD USER INFO
+           ══════════════════════════════════════════ */
+        .masthead-user {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .masthead-user-name {
+            font-size: 0.7rem;
+            color: var(--ink-2);
+            letter-spacing: 0.08em;
+        }
+        .masthead-user-name strong {
+            color: var(--ink);
+            font-weight: 600;
+        }
+        .masthead-btn {
+            padding: 7px 16px;
+            background: transparent;
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            color: var(--ink-2);
+            transition: all 0.15s;
+            border-radius: 0;
+        }
+        .masthead-btn:hover { background: var(--ink); color: var(--white); border-color: var(--ink); }
+        .masthead-btn.primary { background: var(--ink); color: var(--white); border-color: var(--ink); }
+        .masthead-btn.primary:hover { background: #333; }
+
+        /* ══════════════════════════════════════════
+           CLIENT SELECTOR
+           ══════════════════════════════════════════ */
+        .client-field-wrap {
+            margin-bottom: 36px;
+            padding: 20px 22px;
+            background: var(--white);
+            border: 1px solid var(--rule);
+            border-left: 3px solid var(--ink);
+        }
+        .client-field-label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .client-field-actions { display: flex; gap: 8px; }
+        .client-action-btn {
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            font-family: 'Inter', sans-serif;
+        }
+        .client-action-btn:hover { color: var(--ink); }
+        .client-select {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            padding: 11px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.88rem;
+            font-weight: 300;
+            color: var(--ink);
+            appearance: none;
+            border-radius: 0;
+        }
+        .client-select:focus { outline: none; border-bottom-color: var(--accent); }
+
+        /* ══════════════════════════════════════════
+           CLIENT MODAL
+           ══════════════════════════════════════════ */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.45);
+            z-index: 500;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-box {
+            background: var(--white);
+            border-top: 3px solid var(--ink);
+            padding: 40px 48px;
+            width: 100%;
+            max-width: 520px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        .modal-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 28px;
+            letter-spacing: -0.02em;
+        }
+        .modal-close {
+            position: absolute;
+            top: 20px; right: 24px;
+            background: none;
+            border: none;
+            font-size: 1.4rem;
+            cursor: pointer;
+            color: var(--ink-2);
+            line-height: 1;
+            padding: 4px;
+        }
+        .modal-close:hover { color: var(--ink); }
+        .modal-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+        .modal-field label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+        }
+        .modal-field input,
+        .modal-field select,
+        .modal-field textarea {
+            background: var(--bg);
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            padding: 10px 12px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.88rem;
+            font-weight: 300;
+            color: var(--ink);
+            width: 100%;
+            border-radius: 0;
+            appearance: none;
+        }
+        .modal-field textarea { min-height: 80px; resize: vertical; }
+        .modal-field input:focus,
+        .modal-field select:focus,
+        .modal-field textarea:focus { outline: none; border-bottom-color: var(--accent); }
+        .modal-field input::placeholder,
+        .modal-field textarea::placeholder { color: var(--rule); }
+        .modal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .modal-actions { display: flex; gap: 12px; margin-top: 24px; justify-content: flex-end; }
+        .modal-btn {
+            padding: 10px 28px;
+            border: 1px solid var(--rule);
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .modal-btn.primary { background: var(--ink); color: var(--white); border-color: var(--ink); }
+        .modal-btn.primary:hover { background: #333; }
+        .modal-btn:not(.primary):hover { background: var(--ink); color: var(--white); border-color: var(--ink); }
+        .modal-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        /* ══════════════════════════════════════════
+           SAVED TRIPS PANEL
+           ══════════════════════════════════════════ */
+        .trips-panel-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 13px 20px;
+            background: var(--white);
+            border: 1px solid var(--rule);
+            border-left: 3px solid var(--ink);
+            cursor: pointer;
+            width: 100%;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            transition: all 0.15s;
+            margin-bottom: 0;
+        }
+        .trips-panel-toggle:hover { color: var(--ink); }
+        .trips-panel-toggle .trips-arrow {
+            margin-left: auto;
+            transition: transform 0.2s;
+        }
+        .trips-panel-toggle.open .trips-arrow { transform: rotate(180deg); }
+        .trips-panel {
+            display: none;
+            border: 1px solid var(--rule);
+            border-top: none;
+            background: var(--white);
+            margin-bottom: 32px;
+        }
+        .trips-panel.open { display: block; }
+        .trips-panel-inner { padding: 8px 0; max-height: 360px; overflow-y: auto; }
+        .trips-empty {
+            padding: 24px 20px;
+            font-size: 0.82rem;
+            color: var(--ink-2);
+            text-align: center;
+        }
+        .trip-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--sand);
+            cursor: pointer;
+            transition: background 0.12s;
+        }
+        .trip-row:last-child { border-bottom: none; }
+        .trip-row:hover { background: var(--bg); }
+        .trip-row-info { flex: 1; min-width: 0; }
+        .trip-row-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 0.88rem;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--ink);
+        }
+        .trip-row-meta {
+            font-size: 0.62rem;
+            color: var(--ink-2);
+            letter-spacing: 0.08em;
+            margin-top: 2px;
+        }
+        .trip-row-badge {
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: 2px 8px;
+            border-radius: 2px;
+            flex-shrink: 0;
+        }
+        .trip-row-badge.draft     { background: var(--sand);   color: var(--ink-2); }
+        .trip-row-badge.finalized { background: #eaf7ee; color: #1a7a3a; }
+        .trip-row-load {
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px 8px;
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            flex-shrink: 0;
+        }
+        .trip-row-load:hover { background: var(--ink); color: var(--white); border-color: var(--ink); }
+    </style>
+</head>
+<body>
+
+    <!-- LOGIN SCREEN (shown when not authenticated) -->
+    <div class="login-screen" id="loginScreen">
+        <div class="login-box">
+            <div class="login-brand">Trip Master</div>
+            <div class="login-kicker">Staff Portal &middot; Sign In</div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="login-field">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" placeholder="you@company.com" required autocomplete="username">
+                </div>
+                <div class="login-field">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
+                <div class="login-error" id="loginError"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- CLIENT MODAL (create new client) -->
+    <div class="modal-overlay" id="clientModal">
+        <div class="modal-box">
+            <button class="modal-close" onclick="closeClientModal()" title="Close">&times;</button>
+            <div class="modal-title">New Client</div>
+            <form id="clientForm" onsubmit="saveNewClient(event)">
+                <div class="modal-field">
+                    <label>Full Name *</label>
+                    <input type="text" id="cName" placeholder="e.g., Jane Smith" required>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Email</label>
+                        <input type="email" id="cEmail" placeholder="jane@company.com">
+                    </div>
+                    <div class="modal-field">
+                        <label>Phone</label>
+                        <input type="tel" id="cPhone" placeholder="+1 555 0100">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Company</label>
+                        <input type="text" id="cCompany" placeholder="Acme Corp">
+                    </div>
+                    <div class="modal-field">
+                        <label>Home City</label>
+                        <input type="text" id="cHomeCity" placeholder="New York, NY">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Budget Preference</label>
+                        <select id="cBudget">
+                            <option value="">Unspecified</option>
+                            <option value="budget">Budget</option>
+                            <option value="moderate">Moderate</option>
+                            <option value="upscale">Upscale</option>
+                            <option value="luxury">Luxury</option>
+                        </select>
+                    </div>
+                    <div class="modal-field">
+                        <label>Travel Style</label>
+                        <input type="text" id="cTravelStyle" placeholder="e.g., Adventure, Cultural">
+                    </div>
+                </div>
+                <div class="modal-field">
+                    <label>Notes</label>
+                    <textarea id="cNotes" placeholder="Any important preferences or context…"></textarea>
+                </div>
+                <div class="modal-field">
+                    <label>Tags (comma separated)</label>
+                    <input type="text" id="cTags" placeholder="e.g., VIP, Annual, Photography">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="modal-btn" onclick="closeClientModal()">Cancel</button>
+                    <button type="submit" class="modal-btn primary" id="saveClientBtn">Save Client</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MASTHEAD -->
+    <header class="masthead">
+        <div class="masthead-brand">Trip Master</div>
+        <div class="masthead-user" id="mastheadUser" style="display:none">
+            <span class="masthead-user-name">Signed in as <strong id="mastheadUserName"></strong></span>
+            <button class="masthead-btn" onclick="openTripsPanel()" title="View saved trips">Saved Trips</button>
+            <button class="masthead-btn" onclick="handleLogout()">Sign Out</button>
+        </div>
+        <div class="masthead-issue" id="mastheadIssue">AI Travel Intelligence &middot; Est. 2025</div>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero-spread">
+        <div class="hero-text">
+            <p class="kicker">Bespoke Travel Guides</p>
+            <h1 class="hero-headline">The world<br>is <em>yours</em><br>to explore.</h1>
+            <p class="hero-dek">Photography locations, curated restaurants, and the attractions worth your time — all generated in under a minute, tailored to you.</p>
+            <button class="hero-cta" onclick="document.querySelector('.form-wrap').scrollIntoView({behavior:'smooth'})">
+                Build your guide
+                <span class="hero-cta-arrow"></span>
+            </button>
+        </div>
+        <div class="hero-visual">
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="100" cy="100" r="90" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="60" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="30" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="100" y1="10" x2="100" y2="190" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="10" y1="100" x2="190" y2="100" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="36" y1="36" x2="164" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <line x1="164" y1="36" x2="36" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <polygon points="100,10 106,95 100,100 94,95" fill="#1a1a1a"/>
+                <polygon points="100,190 94,105 100,100 106,105" fill="#1a1a1a" opacity="0.3"/>
+            </svg>
+            <span class="hero-visual-label">Your compass awaits</span>
+        </div>
+    </section>
+
+    <!-- FORM -->
+    <section class="form-wrap">
+        <div class="form-header">
+            <div class="form-issue-number">01</div>
+            <div class="form-title-group">
+                <h2>Plan Your Journey</h2>
+                <p>Tell us about your trip and we'll craft your guide.</p>
+            </div>
+        </div>
+
+        <!-- Saved trips panel (collapsible) -->
+        <button type="button" class="trips-panel-toggle" id="tripsPanelToggle" onclick="toggleTripsPanel()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Saved Trips
+            <span id="tripsPanelCount" style="font-size:0.6rem;color:var(--rule)"></span>
+            <svg class="trips-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="trips-panel" id="tripsPanel">
+            <div class="trips-panel-inner" id="tripsPanelInner">
+                <div class="trips-empty">Loading trips…</div>
+            </div>
+        </div>
+
+        <form id="tripForm">
+
+            <!-- Client selector -->
+            <div class="client-field-wrap">
+                <div class="client-field-label">
+                    <span>Client (optional)</span>
+                    <div class="client-field-actions">
+                        <button type="button" class="client-action-btn" onclick="openClientModal()">+ New Client</button>
+                        <span style="color:var(--rule);font-size:0.62rem;">/</span>
+                        <button type="button" class="client-action-btn" onclick="refreshClientList()">Refresh</button>
+                    </div>
+                </div>
+                <select id="clientSelect" class="client-select">
+                    <option value="">— No client selected —</option>
+                </select>
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="location">Destination</label>
+                    <input type="text" id="location" placeholder="e.g., Barcelona, Spain" required>
+                </div>
+                <div class="field">
+                    <label for="duration">Duration (1–14 days)</label>
+                    <input type="number" id="duration" min="1" max="14" value="3" required>
+                </div>
+            </div>
+
+            <!-- Photography -->
+            <div class="cat-section" id="section-photos">
+                <div class="cat-header">
+                    <span class="cat-number">I</span>
+                    <span class="cat-title">Photography Interests</span>
+                    <div class="section-toggle on" id="toggle-photos" onclick="toggleSection('photos')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-photos-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="p1" name="photo_interests" value="Architecture & Buildings"><label for="p1">Architecture</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p2" name="photo_interests" value="Urban & Street Photography"><label for="p2">Urban & Street</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p3" name="photo_interests" value="Sunrise & Sunset (Golden Hour)"><label for="p3">Golden Hour</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p4" name="photo_interests" value="Landscapes & Nature"><label for="p4">Landscapes</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p5" name="photo_interests" value="other" onchange="toggleOther(this,'photo_other_text')"><label for="p5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="photo_other_text_wrapper">
+                    <input type="text" id="photo_other_text" placeholder="e.g., Bridges, Industrial, Wildlife...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Photo spots per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('photos_per_day', -1)">−</button>
+                        <span class="count-value" id="photos_per_day_display">3</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('photos_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="photos_per_day" value="3">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Dining -->
+            <div class="cat-section" id="section-dining">
+                <div class="cat-header">
+                    <span class="cat-number">II</span>
+                    <span class="cat-title">Dining Preferences</span>
+                    <div class="section-toggle on" id="toggle-dining" onclick="toggleSection('dining')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-dining-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="c1" name="cuisines" value="Traditional Local Cuisine" checked><label for="c1">Local Cuisine</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c2" name="cuisines" value="Street Food & Casual"><label for="c2">Street Food</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c3" name="cuisines" value="Fine Dining & Upscale"><label for="c3">Fine Dining</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c4" name="cuisines" value="Fusion & Modern"><label for="c4">Fusion & Modern</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c5" name="cuisines" value="other" onchange="toggleOther(this,'cuisine_other_text')"><label for="c5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="cuisine_other_text_wrapper">
+                    <input type="text" id="cuisine_other_text" placeholder="e.g., Thai, Lebanese, Vegan...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Restaurants per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', -1)">−</button>
+                        <span class="count-value" id="restaurants_per_day_display">3</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="restaurants_per_day" value="3">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Attractions -->
+            <div class="cat-section" id="section-attractions">
+                <div class="cat-header">
+                    <span class="cat-number">III</span>
+                    <span class="cat-title">Attraction Categories</span>
+                    <div class="section-toggle on" id="toggle-attractions" onclick="toggleSection('attractions')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-attractions-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="a1" name="attractions" value="Historical & Cultural Sites"><label for="a1">Historical & Cultural</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a2" name="attractions" value="Art, Museums & Galleries"><label for="a2">Art & Museums</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a3" name="attractions" value="Shopping & Neighborhoods"><label for="a3">Shopping & Districts</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a4" name="attractions" value="Nature, Parks & Gardens"><label for="a4">Nature & Parks</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a5" name="attractions" value="other" onchange="toggleOther(this,'attr_other_text')"><label for="a5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="attr_other_text_wrapper">
+                    <input type="text" id="attr_other_text" placeholder="e.g., Wineries, Beaches, Live Music...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Attractions per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', -1)">−</button>
+                        <span class="count-value" id="attractions_per_day_display">4</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="attractions_per_day" value="4">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Budget + Distance -->
+            <div class="field-row">
+                <div class="field">
+                    <label for="budget">Budget Range</label>
+                    <select id="budget" required>
+                        <option value="">Select...</option>
+                        <option value="Budget-Conscious">Budget-Conscious</option>
+                        <option value="Moderate" selected>Moderate</option>
+                        <option value="Upscale">Upscale</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="distance">Travel Radius</label>
+                    <select id="distance" required>
+                        <option value="">Select...</option>
+                        <option value="City Center Only">City Center Only</option>
+                        <option value="Up to 15 minutes" selected>Up to 15 minutes</option>
+                        <option value="Up to 30 minutes">Up to 30 minutes</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+
+            <div class="submit-row">
+                <button type="submit" class="submit-btn" id="submitBtn">Generate Guide</button>
+                <p class="submit-note">Powered by Claude AI<br>Results in under a minute</p>
+            </div>
+
+        </form>
+    </section>
+
+    <!-- LOADING -->
+    <div class="loading" id="loading">
+        <p class="loading-headline">Assembling your<br>perfect itinerary&hellip;</p>
+        <div class="progress-steps">
+            <div class="progress-step" id="step-photos">📸 Photo Scout</div>
+            <div class="progress-step" id="step-restaurants">🍽 Restaurant Scout</div>
+            <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
+            <div class="progress-step" id="step-building">🔍 Verifying Locations</div>
+        </div>
+    </div>
+
+    <!-- REVIEW SCREEN -->
+    <div class="review-container" id="reviewContainer">
+        <div class="review-masthead">
+            <div>
+                <h2 id="reviewTitle">Review Your Suggestions</h2>
+                <p id="reviewSubtitle">Toggle off anything you don't want in the final guide</p>
+            </div>
+            <div class="review-btns">
+                <button onclick="resetForm()">Start Over</button>
+                <button class="review-generate-btn" id="generateFinalBtn" onclick="generateFinalGuide()">
+                    Generate Final Guide
+                    <span class="review-generate-count" id="finalCountBadge">0 selected</span>
+                </button>
+            </div>
+        </div>
+        <div class="review-body" id="reviewBody"></div>
+    </div>
+
+    <!-- FINALIZING STATE -->
+    <div class="finalizing" id="finalizing">
+        <p class="loading-headline">Crafting your<br>final guide&hellip;</p>
+        <p class="finalizing-sub">Generating maps &amp; building your curated guide</p>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="result-container" id="resultContainer">
+        <div class="result-masthead">
+            <div>
+                <h2 id="resultTitle">Your Guide</h2>
+                <p id="resultSubtitle"></p>
+            </div>
+            <div class="result-btns">
+                <button onclick="printGuide()">Save as PDF</button>
+                <button onclick="reviseTrip()">Revise Trip</button>
+                <button onclick="resetForm()">Start Over</button>
+            </div>
+        </div>
+        <iframe id="previewFrame" class="result-preview"></iframe>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5001';
+        const MAX_LOCATION_LENGTH = 100;
+        const MIN_DURATION = 1;
+        const MAX_DURATION = 14;
+
+        // ── Auth state ──────────────────────────────────────────────────────
+        let currentUser = null;
+
+        /**
+         * apiFetch — drop-in fetch wrapper that:
+         *  - Includes credentials (httpOnly cookie) on every request
+         *  - Redirects to login screen on 401
+         *  - Slides the auth cookie automatically (backend handles this)
+         *  - Sends X-Requested-With for CSRF defence on state-changing requests
+         */
+        async function apiFetch(path, options = {}) {
+            const res = await fetch(`${API_URL}${path}`, {
+                credentials: 'include',
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    // Anti-CSRF: browsers never auto-attach this on cross-site
+                    // requests. The backend require_auth decorator validates it
+                    // on all POST / PUT / DELETE / PATCH calls.
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(options.headers || {}),
+                },
+            });
+            if (res.status === 401) {
+                currentUser = null;
+                showLoginScreen();
+                throw new Error('Not authenticated');
+            }
+            return res;
+        }
+
+        // ── Bootstrap: check if already logged in ───────────────────────────
+        async function checkAuth() {
+            try {
+                const res = await fetch(`${API_URL}/auth/me`, { credentials: 'include' });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentUser = data.user;
+                    onAuthSuccess();
+                } else {
+                    showLoginScreen();
+                }
+            } catch {
+                showLoginScreen();
+            }
+        }
+
+        function showLoginScreen() {
+            document.getElementById('loginScreen').classList.add('active');
+            document.getElementById('mastheadUser').style.display = 'none';
+            document.getElementById('mastheadIssue').style.display = '';
+            // focus email field
+            setTimeout(() => document.getElementById('loginEmail').focus(), 50);
+        }
+
+        function onAuthSuccess() {
+            document.getElementById('loginScreen').classList.remove('active');
+            document.getElementById('mastheadUser').style.display = '';
+            document.getElementById('mastheadIssue').style.display = 'none';
+            document.getElementById('mastheadUserName').textContent = currentUser.full_name || currentUser.email;
+            // Load clients and trips
+            refreshClientList();
+            loadSavedTrips();
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const btn = document.getElementById('loginBtn');
+            const err = document.getElementById('loginError');
+            err.classList.remove('active');
+            btn.disabled = true;
+            btn.textContent = 'Signing in…';
+            try {
+                const res = await fetch(`${API_URL}/auth/login`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email:    document.getElementById('loginEmail').value.trim(),
+                        password: document.getElementById('loginPassword').value,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Login failed');
+                currentUser = data.user;
+                document.getElementById('loginPassword').value = '';
+                onAuthSuccess();
+            } catch (ex) {
+                err.textContent = ex.message;
+                err.classList.add('active');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sign In';
+            }
+        }
+
+        async function handleLogout() {
+            await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' });
+            currentUser = null;
+            resetForm();
+            showLoginScreen();
+        }
+
+        // ── Client management ───────────────────────────────────────────────
+        let _clients = [];
+
+        async function refreshClientList() {
+            try {
+                const res  = await apiFetch('/clients');
+                const data = await res.json();
+                _clients = data.clients || [];
+                const sel = document.getElementById('clientSelect');
+                const cur = sel.value;
+                sel.innerHTML = '<option value="">— No client selected —</option>';
+                _clients.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = `${c.reference_code} — ${c.name}${c.company ? ' (' + c.company + ')' : ''}`;
+                    sel.appendChild(opt);
+                });
+                if (cur) sel.value = cur;
+            } catch { /* non-fatal */ }
+        }
+
+        function openClientModal() {
+            document.getElementById('clientForm').reset();
+            document.getElementById('clientModal').classList.add('active');
+            setTimeout(() => document.getElementById('cName').focus(), 50);
+        }
+
+        function closeClientModal() {
+            document.getElementById('clientModal').classList.remove('active');
+        }
+
+        async function saveNewClient(e) {
+            e.preventDefault();
+            const btn = document.getElementById('saveClientBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+            try {
+                const res = await apiFetch('/clients', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        name:             document.getElementById('cName').value.trim(),
+                        email:            document.getElementById('cEmail').value.trim(),
+                        phone:            document.getElementById('cPhone').value.trim(),
+                        company:          document.getElementById('cCompany').value.trim(),
+                        home_city:        document.getElementById('cHomeCity').value.trim(),
+                        preferred_budget: document.getElementById('cBudget').value,
+                        travel_style:     document.getElementById('cTravelStyle').value.trim(),
+                        notes:            document.getElementById('cNotes').value.trim(),
+                        tags:             document.getElementById('cTags').value.trim(),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to save client');
+                closeClientModal();
+                await refreshClientList();
+                // Select the newly created client
+                document.getElementById('clientSelect').value = data.client.id;
+            } catch (ex) {
+                alert('Error: ' + ex.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Client';
+            }
+        }
+
+        // ── Saved trips panel ───────────────────────────────────────────────
+        let _trips = [];
+
+        async function loadSavedTrips() {
+            try {
+                const res  = await apiFetch('/trips');
+                const data = await res.json();
+                _trips = data.trips || [];
+                renderTripsPanel();
+            } catch { /* non-fatal */ }
+        }
+
+        function renderTripsPanel() {
+            const inner = document.getElementById('tripsPanelInner');
+            const count = document.getElementById('tripsPanelCount');
+            count.textContent = _trips.length ? `(${_trips.length})` : '';
+            if (!_trips.length) {
+                inner.innerHTML = '<div class="trips-empty">No saved trips yet. Generate a guide to save one.</div>';
+                return;
+            }
+            inner.innerHTML = '';
+            _trips.forEach(trip => {
+                const row = document.createElement('div');
+                row.className = 'trip-row';
+                const badge = trip.status === 'finalized' ? 'finalized' : 'draft';
+                const date  = trip.updated_at
+                    ? new Date(trip.updated_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+                    : '';
+                const client = _clients.find(c => c.id === trip.client_id);
+                const clientLabel = client ? ` · ${client.reference_code}` : '';
+                row.innerHTML = `
+                    <div class="trip-row-info">
+                        <div class="trip-row-title">${esc(trip.title || trip.location)}</div>
+                        <div class="trip-row-meta">${date}${clientLabel}</div>
+                    </div>
+                    <span class="trip-row-badge ${badge}">${badge}</span>
+                    <button class="trip-row-load" onclick="loadTrip(${trip.id})" title="Load this trip">Load</button>`;
+                inner.appendChild(row);
+            });
+        }
+
+        function toggleTripsPanel() {
+            const toggle = document.getElementById('tripsPanelToggle');
+            const panel  = document.getElementById('tripsPanel');
+            toggle.classList.toggle('open');
+            panel.classList.toggle('open');
+            if (panel.classList.contains('open')) loadSavedTrips();
+        }
+
+        function openTripsPanel() {
+            const toggle = document.getElementById('tripsPanelToggle');
+            const panel  = document.getElementById('tripsPanel');
+            toggle.classList.add('open');
+            panel.classList.add('open');
+            document.getElementById('tripsPanelToggle').scrollIntoView({ behavior: 'smooth' });
+            loadSavedTrips();
+        }
+
+        async function loadTrip(tripId) {
+            try {
+                const res  = await apiFetch(`/trips/${tripId}`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load trip');
+                const trip = data.trip;
+
+                // If finalized with HTML, go straight to results view
+                if (trip.status === 'finalized' && trip.final_html) {
+                    resetForm();
+                    // Re-populate rawData so "Revise Trip" works
+                    rawData = {
+                        session_id:      trip.session_id || '',
+                        trip_id:         trip.id,
+                        location:        trip.location,
+                        duration:        trip.duration,
+                        photo_count:     trip.raw_photos.length,
+                        restaurant_count: trip.raw_restaurants.length,
+                        attraction_count: trip.raw_attractions.length,
+                        photos:          trip.raw_photos,
+                        restaurants:     trip.raw_restaurants,
+                        attractions:     trip.raw_attractions,
+                    };
+                    // Restore approval state from saved indices
+                    const pIdx = trip.approved_photo_indices       || trip.raw_photos.map((_,i) => i);
+                    const rIdx = trip.approved_restaurant_indices  || trip.raw_restaurants.map((_,i) => i);
+                    const aIdx = trip.approved_attraction_indices  || trip.raw_attractions.map((_,i) => i);
+                    approvalState.photos      = trip.raw_photos.map((_,i) => pIdx.includes(i));
+                    approvalState.restaurants = trip.raw_restaurants.map((_,i) => rIdx.includes(i));
+                    approvalState.attractions = trip.raw_attractions.map((_,i) => aIdx.includes(i));
+
+                    displayResults({
+                        html:             trip.final_html,
+                        location:         trip.location,
+                        duration:         trip.duration,
+                        photo_count:      pIdx.length,
+                        restaurant_count: rIdx.length,
+                        attraction_count: aIdx.length,
+                    });
+                } else {
+                    // Draft — load into review screen
+                    resetForm();
+                    showReviewScreen({
+                        session_id:       trip.session_id || '',
+                        trip_id:          trip.id,
+                        location:         trip.location,
+                        duration:         trip.duration,
+                        photos:           trip.raw_photos,
+                        restaurants:      trip.raw_restaurants,
+                        attractions:      trip.raw_attractions,
+                        photo_count:      trip.raw_photos.length,
+                        restaurant_count: trip.raw_restaurants.length,
+                        attraction_count: trip.raw_attractions.length,
+                    });
+                }
+                // Close panel
+                document.getElementById('tripsPanelToggle').classList.remove('open');
+                document.getElementById('tripsPanel').classList.remove('open');
+            } catch (ex) {
+                alert('Error loading trip: ' + ex.message);
+            }
+        }
+
+        // ── Section enable/disable state ──
+        const sectionEnabled = { photos: true, dining: true, attractions: true };
+
+        // Per-section count limits [min, max, default]
+        const countConfig = {
+            photos_per_day:       { min: 1, max: 10, value: 3 },
+            restaurants_per_day:  { min: 1, max: 8,  value: 3 },
+            attractions_per_day:  { min: 1, max: 10, value: 4 },
+        };
+
+        // ── Review state ──
+        let rawData = null;   // full /generate response (items + session_id)
+        let approvalState = { photos: [], restaurants: [], attractions: [] };
+
+        // ─────────────────────────────────────────────────────────────────
+        // REVIEW SCREEN FUNCTIONS
+        // ─────────────────────────────────────────────────────────────────
+
+        function showReviewScreen(result) {
+            rawData = result;   // preserves session_id, trip_id, location, duration, etc.
+            // Defensive: ensure arrays exist even if a section was disabled or errored
+            result.photos      = Array.isArray(result.photos)      ? result.photos      : [];
+            result.restaurants = Array.isArray(result.restaurants)  ? result.restaurants : [];
+            result.attractions = Array.isArray(result.attractions)  ? result.attractions : [];
+            // Default: all items approved
+            approvalState.photos      = result.photos.map(() => true);
+            approvalState.restaurants = result.restaurants.map(() => true);
+            approvalState.attractions = result.attractions.map(() => true);
+
+            document.getElementById('reviewTitle').textContent =
+                `Review — ${result.location}`;
+            document.getElementById('reviewSubtitle').textContent =
+                `${result.photo_count + result.restaurant_count + result.attraction_count} suggestions · toggle off anything you don't want in the final guide`;
+
+            const body = document.getElementById('reviewBody');
+            body.innerHTML = '';
+            if (result.photos.length)      body.appendChild(buildReviewSection('photos',      result.photos,      'Photography',  'Locations & photo spots'));
+            if (result.restaurants.length) body.appendChild(buildReviewSection('restaurants', result.restaurants, 'Dining',        'Restaurants & cafés'));
+            if (result.attractions.length) body.appendChild(buildReviewSection('attractions', result.attractions, 'Attractions',   'Things to see & do'));
+
+            // Show a warning banner for each category that returned 0 results after retries.
+            // Prepend so banners appear above the section cards.
+            if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+                const warnHtml = result.warnings.map(msg => `
+                    <div class="scout-warning">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        ${msg}
+                    </div>`).join('');
+                body.insertAdjacentHTML('afterbegin', warnHtml);
+            }
+
+            updateGlobalCount();
+
+            document.getElementById('loading').classList.remove('active');
+            document.getElementById('reviewContainer').classList.add('active');
+            document.getElementById('reviewContainer').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function buildReviewSection(type, items, title, subtitle) {
+            // Group items by day
+            const byDay = {};
+            items.forEach((item, idx) => {
+                const day = item.day || 1;
+                if (!byDay[day]) byDay[day] = [];
+                byDay[day].push({ item, idx });
+            });
+
+            const section = document.createElement('div');
+            section.className = 'review-section';
+            section.id = `review-section-${type}`;
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'review-section-header';
+            header.innerHTML = `
+                <div class="review-section-titles">
+                    <div class="review-section-title">${title}</div>
+                    <div class="review-section-subtitle">${subtitle}</div>
+                </div>
+                <div class="review-section-count" id="count-${type}">
+                    <strong>${items.length}</strong>&nbsp;of&nbsp;<strong>${items.length}</strong>&nbsp;selected
+                </div>
+                <div class="review-bulk-actions">
+                    <button class="review-bulk-btn" onclick="bulkSelect('${type}', true)">All</button>
+                    <span class="review-bulk-sep">/</span>
+                    <button class="review-bulk-btn" onclick="bulkSelect('${type}', false)">None</button>
+                </div>`;
+            section.appendChild(header);
+
+            // Day groups
+            Object.keys(byDay).sort((a,b) => a-b).forEach(day => {
+                const group = document.createElement('div');
+                group.className = 'review-day-group';
+                group.innerHTML = `<div class="review-day-label">Day ${day}</div>`;
+
+                byDay[day].forEach(({ item, idx }) => {
+                    group.appendChild(buildReviewItem(type, item, idx));
+                });
+                section.appendChild(group);
+            });
+
+            return section;
+        }
+
+        function buildReviewItem(type, item, idx) {
+            const row = document.createElement('div');
+            row.className = 'review-item';
+            row.id = `review-item-${type}-${idx}`;
+
+            const isVerified = item._status === 'OPERATIONAL';
+            const dotClass   = isVerified ? 'verified' : 'unverified';
+
+            // Build type-specific tags
+            let tags = '';
+            if (type === 'photos') {
+                if (item.time)    tags += `<span class="review-item-tag accent">${esc(item.time)}</span>`;
+                const addrPart = (item.address || '').split(',')[0].trim();
+                if (addrPart)   tags += `<span class="review-item-tag">${esc(addrPart)}</span>`;
+            } else if (type === 'restaurants') {
+                if (item.meal_type) tags += `<span class="review-item-tag accent">${esc(item.meal_type)}</span>`;
+                if (item.cuisine)   tags += `<span class="review-item-tag">${esc(item.cuisine)}</span>`;
+                if (item.price)     tags += `<span class="review-item-tag">${esc(item.price)}</span>`;
+            } else {
+                if (item.time)     tags += `<span class="review-item-tag accent">${esc(item.time)}</span>`;
+                if (item.category) tags += `<span class="review-item-tag">${esc(item.category)}</span>`;
+                if (item.admission && item.admission !== 'Free')
+                                   tags += `<span class="review-item-tag">${esc(item.admission)}</span>`;
+            }
+
+            row.innerHTML = `
+                <button class="review-item-toggle" id="toggle-${type}-${idx}"
+                        onclick="toggleItem('${type}', ${idx})" title="Toggle this item"></button>
+                <span class="review-item-name">${esc(item.name || 'Unnamed')}</span>
+                <div class="review-item-tags">${tags}</div>
+                <div class="review-status-dot ${dotClass}" title="${isVerified ? 'Verified open' : 'Unverified'}"></div>`;
+
+            return row;
+        }
+
+        // Simple HTML escaper for review cards (untrusted AI content)
+        function esc(str) {
+            return String(str || '')
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        }
+
+        function toggleItem(type, idx) {
+            approvalState[type][idx] = !approvalState[type][idx];
+            const row    = document.getElementById(`review-item-${type}-${idx}`);
+            const toggle = document.getElementById(`toggle-${type}-${idx}`);
+            const approved = approvalState[type][idx];
+            row.classList.toggle('rejected', !approved);
+            toggle.classList.toggle('off', !approved);
+            updateSectionCount(type);
+            updateGlobalCount();
+        }
+
+        function bulkSelect(type, approved) {
+            approvalState[type] = approvalState[type].map(() => approved);
+            // Update all item rows
+            approvalState[type].forEach((_, idx) => {
+                const row    = document.getElementById(`review-item-${type}-${idx}`);
+                const toggle = document.getElementById(`toggle-${type}-${idx}`);
+                if (row)    row.classList.toggle('rejected', !approved);
+                if (toggle) toggle.classList.toggle('off', !approved);
+            });
+            updateSectionCount(type);
+            updateGlobalCount();
+        }
+
+        function updateSectionCount(type) {
+            const total    = approvalState[type].length;
+            const selected = approvalState[type].filter(Boolean).length;
+            const el = document.getElementById(`count-${type}`);
+            if (el) el.innerHTML =
+                `<strong>${selected}</strong>&nbsp;of&nbsp;<strong>${total}</strong>&nbsp;selected`;
+        }
+
+        function updateGlobalCount() {
+            const total = Object.values(approvalState).flat().filter(Boolean).length;
+            document.getElementById('finalCountBadge').textContent =
+                `${total} selected`;
+            document.getElementById('generateFinalBtn').disabled = (total === 0);
+        }
+
+        async function generateFinalGuide() {
+            if (!rawData) return;
+
+            const approvedPhotos      = approvalState.photos.map((v,i) => v ? i : -1).filter(i => i >= 0);
+            const approvedRestaurants = approvalState.restaurants.map((v,i) => v ? i : -1).filter(i => i >= 0);
+            const approvedAttractions = approvalState.attractions.map((v,i) => v ? i : -1).filter(i => i >= 0);
+
+            document.getElementById('reviewContainer').classList.remove('active');
+            document.getElementById('finalizing').classList.add('active');
+            document.getElementById('finalizing').scrollIntoView({ behavior: 'smooth' });
+
+            try {
+                const response = await apiFetch('/finalize', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        session_id:           rawData.session_id,
+                        trip_id:              rawData.trip_id || null,
+                        approved_photos:      approvedPhotos,
+                        approved_restaurants: approvedRestaurants,
+                        approved_attractions: approvedAttractions,
+                    })
+                });
+
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Failed to generate final guide');
+
+                document.getElementById('finalizing').classList.remove('active');
+                // Refresh saved trips list in background
+                loadSavedTrips();
+                displayResults(result);
+
+            } catch (err) {
+                document.getElementById('finalizing').classList.remove('active');
+                document.getElementById('reviewContainer').classList.add('active');
+                showError(`Error: ${err.message}`);
+            }
+        }
+
+        function reviseTrip() {
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('reviewContainer').classList.add('active');
+            document.getElementById('reviewContainer').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function toggleSection(key) {
+            sectionEnabled[key] = !sectionEnabled[key];
+            const section = document.getElementById(`section-${key}`);
+            const toggle  = document.getElementById(`toggle-${key}`);
+            const label   = document.getElementById(`toggle-${key}-label`);
+            if (sectionEnabled[key]) {
+                section.classList.remove('disabled');
+                toggle.classList.add('on');
+                label.textContent = 'On';
+            } else {
+                section.classList.add('disabled');
+                toggle.classList.remove('on');
+                label.textContent = 'Off';
+            }
+        }
+
+        function adjustCount(id, delta) {
+            const cfg = countConfig[id];
+            cfg.value = Math.min(cfg.max, Math.max(cfg.min, cfg.value + delta));
+            document.getElementById(id + '_display').textContent = cfg.value;
+            document.getElementById(id).value = cfg.value;
+        }
+
+        function toggleOther(checkbox, textId) {
+            const wrapper = document.getElementById(textId + '_wrapper');
+            const input   = document.getElementById(textId);
+            if (checkbox.checked) { wrapper.classList.add('visible'); input.focus(); }
+            else { wrapper.classList.remove('visible'); input.value = ''; }
+        }
+
+        function getGroupValues(name, otherTextId) {
+            return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`))
+                .map(cb => cb.value === 'other'
+                    ? (document.getElementById(otherTextId).value.trim() || null)
+                    : cb.value)
+                .filter(Boolean);
+        }
+
+        let progressInterval = null;
+
+        function buildProgressStepIds() {
+            // Only include progress steps for enabled sections
+            const steps = [];
+            if (sectionEnabled.photos)      steps.push('step-photos');
+            if (sectionEnabled.dining)      steps.push('step-restaurants');
+            if (sectionEnabled.attractions) steps.push('step-attractions');
+            steps.push('step-building');
+            return steps;
+        }
+
+        function startProgressAnimation() {
+            const steps = buildProgressStepIds();
+            // Hide steps for disabled sections
+            ['step-photos','step-restaurants','step-attractions','step-building']
+                .forEach(id => {
+                    const el = document.getElementById(id);
+                    el.className = 'progress-step';
+                    el.style.display = steps.includes(id) ? '' : 'none';
+                });
+            let current = 0;
+            progressInterval = setInterval(() => {
+                if (current < steps.length) {
+                    if (current > 0) document.getElementById(steps[current-1]).className = 'progress-step done';
+                    document.getElementById(steps[current]).className = 'progress-step active';
+                    current++;
+                }
+            }, 8000);
+        }
+
+        function stopProgressAnimation(success) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+            ['step-photos','step-restaurants','step-attractions','step-building'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el.style.display !== 'none')
+                    el.className = success ? 'progress-step done' : 'progress-step';
+            });
+        }
+
+        document.getElementById('tripForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // At least one section must be enabled
+            if (!sectionEnabled.photos && !sectionEnabled.dining && !sectionEnabled.attractions)
+                return showError('Please enable at least one section (Photography, Dining, or Attractions)');
+
+            // Validate enabled sections have at least one selection + other fields filled
+            if (sectionEnabled.photos) {
+                const photoInterests = getGroupValues('photo_interests', 'photo_other_text');
+                if (!photoInterests.length)
+                    return showError('Please select at least one Photography interest (or turn the section off)');
+                if (document.getElementById('p5').checked && !document.getElementById('photo_other_text').value.trim())
+                    return showError('Please describe your other photography interest, or uncheck "Other"');
+            }
+            if (sectionEnabled.dining) {
+                const cuisines = getGroupValues('cuisines', 'cuisine_other_text');
+                if (!cuisines.length)
+                    return showError('Please select at least one Dining preference (or turn the section off)');
+                if (document.getElementById('c5').checked && !document.getElementById('cuisine_other_text').value.trim())
+                    return showError('Please describe your other dining preference, or uncheck "Other"');
+            }
+            if (sectionEnabled.attractions) {
+                const attractionVals = getGroupValues('attractions', 'attr_other_text');
+                if (!attractionVals.length)
+                    return showError('Please select at least one Attraction category (or turn the section off)');
+                if (document.getElementById('a5').checked && !document.getElementById('attr_other_text').value.trim())
+                    return showError('Please describe your other attraction interest, or uncheck "Other"');
+            }
+
+            const location = document.getElementById('location').value.trim();
+            if (!location) return showError('Please enter a destination');
+            if (location.length > MAX_LOCATION_LENGTH)
+                return showError(`Destination must be ${MAX_LOCATION_LENGTH} characters or fewer`);
+
+            const duration = parseInt(document.getElementById('duration').value, 10);
+            if (isNaN(duration) || duration < MIN_DURATION || duration > MAX_DURATION)
+                return showError(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} days`);
+
+            const budget   = document.getElementById('budget').value;
+            const distance = document.getElementById('distance').value;
+            if (!budget || !distance)
+                return showError('Please select a budget and travel radius');
+
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            startProgressAnimation();
+
+            // Build payload — only send enabled sections
+            const payload = {
+                location, duration, budget, distance,
+                include_photos:      sectionEnabled.photos,
+                include_dining:      sectionEnabled.dining,
+                include_attractions: sectionEnabled.attractions,
+                photos_per_day:      countConfig.photos_per_day.value,
+                restaurants_per_day: countConfig.restaurants_per_day.value,
+                attractions_per_day: countConfig.attractions_per_day.value,
+                photo_interests: sectionEnabled.photos
+                    ? getGroupValues('photo_interests', 'photo_other_text').join(', ')
+                    : '',
+                cuisines: sectionEnabled.dining
+                    ? getGroupValues('cuisines', 'cuisine_other_text').join(', ')
+                    : '',
+                attractions: sectionEnabled.attractions
+                    ? getGroupValues('attractions', 'attr_other_text').join(', ')
+                    : '',
+            };
+
+            // Attach selected client id (optional)
+            const clientId = document.getElementById('clientSelect').value;
+            if (clientId) payload.client_id = parseInt(clientId, 10);
+
+            try {
+                const response = await apiFetch('/generate', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Failed to generate guide');
+                stopProgressAnimation(true);
+                // Refresh saved trips in background after successful generation
+                loadSavedTrips();
+                // showReviewScreen hides the loading div internally after rendering cards
+                showReviewScreen(result);
+
+            } catch (err) {
+                stopProgressAnimation(false);
+                document.getElementById('loading').classList.remove('active');
+                showError(`Error: ${err.message}`);
+            } finally {
+                document.getElementById('submitBtn').disabled = false;
+            }
+        });
+
+        function displayResults(result) {
+            document.getElementById('resultTitle').textContent = `${result.location} Guide`;
+            // Build subtitle only from included sections
+            const parts = [`${result.duration} days`];
+            if (result.photo_count   > 0) parts.push(`${result.photo_count} photo spots`);
+            if (result.restaurant_count > 0) parts.push(`${result.restaurant_count} restaurants`);
+            if (result.attraction_count > 0) parts.push(`${result.attraction_count} attractions`);
+            document.getElementById('resultSubtitle').textContent = parts.join(' · ');
+            document.getElementById('previewFrame').srcdoc = result.html;
+            window.currentLocation = result.location;
+            document.getElementById('resultContainer').classList.add('active');
+            document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function printGuide() {
+            const iframe = document.getElementById('previewFrame');
+            if (iframe.contentWindow) iframe.contentWindow.print();
+        }
+
+        function resetForm() {
+            document.getElementById('tripForm').reset();
+            // Reset other text inputs
+            ['photo_other_text','cuisine_other_text','attr_other_text'].forEach(id => {
+                document.getElementById(id).value = '';
+                document.getElementById(id + '_wrapper').classList.remove('visible');
+            });
+            // Reset section toggles to On
+            ['photos','dining','attractions'].forEach(key => {
+                if (!sectionEnabled[key]) toggleSection(key);
+            });
+            // Reset counts to defaults
+            [['photos_per_day',3],['restaurants_per_day',3],['attractions_per_day',4]].forEach(([id, def]) => {
+                countConfig[id].value = def;
+                document.getElementById(id + '_display').textContent = def;
+                document.getElementById(id).value = def;
+            });
+            // Clear review state
+            rawData = null;
+            approvalState = { photos: [], restaurants: [], attractions: [] };
+            document.getElementById('reviewBody').innerHTML = '';
+            document.getElementById('reviewContainer').classList.remove('active');
+            document.getElementById('finalizing').classList.remove('active');
+            document.getElementById('resultContainer').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            document.getElementById('loading').classList.remove('active');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            document.getElementById('location').focus();
+        }
+
+        function showError(message) {
+            const el = document.getElementById('errorMessage');
+            el.textContent = message;
+            el.classList.add('active');
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // ── Bootstrap: run auth check on page load ───────────────────────────
+        checkAuth();
+    </script>
+</body>
+</html>

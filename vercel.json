@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "comment": "Vercel serves only the static frontend (index.html). The Flask backend must run on a separate host (Railway, Render, Fly.io, etc.). Set VITE_API_URL or update API_URL in index.html to point at your backend URL.",
+  "builds": [
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}
