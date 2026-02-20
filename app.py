@@ -17,7 +17,7 @@ from collections import defaultdict
 from html import escape
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, send_from_directory
 from flask_cors import CORS
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -1730,6 +1730,12 @@ def _run_single_scout(name, fn, args, kwargs, location):
     if items and PLACES_VERIFY_ENABLED:
         items, _ = verify_places_batch(items, 'name', 'address', location)
     return items
+
+
+@app.route('/', methods=['GET'])
+def index():
+    """Serve the frontend single-page app."""
+    return send_from_directory(os.path.dirname(__file__), 'index.html')
 
 
 @app.route('/health', methods=['GET'])

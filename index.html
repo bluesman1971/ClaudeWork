@@ -1640,7 +1640,12 @@
     </div>
 
     <script>
-        const API_URL = 'https://web-production-f82bf.up.railway.app';
+        // API_URL is empty so all fetch calls are relative to the current origin.
+        // This works whether the app runs locally (python app.py) or on Railway,
+        // because the Flask backend serves index.html from the same domain.
+        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? `http://${window.location.hostname}:${window.location.port || 5001}`
+            : '';
         const MAX_LOCATION_LENGTH = 100;
         const MIN_DURATION = 1;
         const MAX_DURATION = 14;
