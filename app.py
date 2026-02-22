@@ -417,18 +417,20 @@ def _parse_json_lines(text, scout_name):
 
 
 def call_photo_scout(location, duration, interests, distance, per_day=None,
-                     accommodation=None, client_profile=None):
+                     accommodation=None, pre_planned=None, client_profile=None):
     """Call Claude to generate detailed photography locations with coordinates.
 
-    accommodation: optional hotel/address string used as the travel origin for
-                   distance and logistics advice.
+    accommodation:  optional hotel/address string — travel origin for distance advice.
+    pre_planned:    optional free-text — already-booked or must-see items the client
+                    has committed to; scouts avoid duplicating these.
     client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, notes — used to personalise recommendations.
+                    travel_style, dietary_requirements, notes.
     """
     if per_day is None:
         per_day = PHOTOS_PER_DAY
     key = _cache_key("photo", location, duration, interests, distance, per_day,
-                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
+                     accommodation, pre_planned,
+                     json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Photo Scout: cache hit for %s", location)
@@ -444,6 +446,12 @@ def call_photo_scout(location, duration, interests, distance, per_day=None,
         "- Accommodation: not specified — use city centre as the assumed travel base.\n"
     )
 
+    pre_planned_block = (
+        f"Already planned / committed:\n  {pre_planned}\n"
+        f"  Do NOT suggest anything that duplicates or conflicts with the above.\n"
+        if pre_planned else ""
+    )
+
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -452,6 +460,8 @@ def call_photo_scout(location, duration, interests, distance, per_day=None,
         profile_lines.append(f"  Budget tier: {profile['preferred_budget']}")
     if profile.get('home_city'):
         profile_lines.append(f"  Home city: {profile['home_city']} — avoid suggesting things they can easily do at home")
+    if profile.get('dietary_requirements'):
+        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — respect these if any location involves food (e.g. café stops, food markets)")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
 
@@ -471,6 +481,7 @@ Trip details:
 - Photography interests: {interests}
 - Max travel radius: {distance}
 {accommodation_block}
+{pre_planned_block}
 {client_block}
 Generate {count} photography locations ({per_day} per day), spread across {duration} days.
 
@@ -481,7 +492,9 @@ PERSONALISATION RULES:
 - If a home city is given, skip locations that are similar to what they have at home — surprise them.
 - If accommodation is given, state the approximate walking or transit time from that address for
   each location. Use real street-level logic, not straight-line distance.
-- If consultant notes mention physical limitations, dietary needs, or other constraints, honour them.
+- If pre-planned commitments are listed, do NOT suggest those locations or anything that would
+  duplicate them. Reference them only if suggesting a nearby complementary spot.
+- If consultant notes mention physical limitations or other constraints, honour them absolutely.
 
 WRITING STYLE — follow this strictly:
 - Write like a knowledgeable friend giving honest advice, not a brochure.
@@ -524,18 +537,20 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
 
 def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
-                          accommodation=None, client_profile=None):
+                          accommodation=None, pre_planned=None, client_profile=None):
     """Call Claude to generate restaurant recommendations.
 
-    accommodation: optional hotel/address string used as the travel origin for
-                   distance and logistics advice.
+    accommodation:  optional hotel/address string — travel origin for distance advice.
+    pre_planned:    optional free-text — already-booked or must-see items the client
+                    has committed to; scouts avoid duplicating these.
     client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, notes — used to personalise recommendations.
+                    travel_style, dietary_requirements, notes.
     """
     if per_day is None:
         per_day = RESTAURANTS_PER_DAY
     key = _cache_key("restaurant", location, duration, cuisines, budget, distance, per_day,
-                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
+                     accommodation, pre_planned,
+                     json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Restaurant Scout: cache hit for %s", location)
@@ -551,6 +566,14 @@ def call_restaurant_scout(location, duration, cuisines, budget, distance, per_da
         "- Accommodation: not specified — use city centre as the assumed travel base.\n"
     )
 
+    pre_planned_block = (
+        f"Already planned / committed:\n  {pre_planned}\n"
+        f"  Do NOT suggest any restaurant that duplicates or conflicts with the above.\n"
+        f"  If a meal slot is clearly covered by a pre-planned event, skip that slot rather than\n"
+        f"  adding a competing recommendation.\n"
+        if pre_planned else ""
+    )
+
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -559,6 +582,8 @@ def call_restaurant_scout(location, duration, cuisines, budget, distance, per_da
         profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — let this shape price tier selection")
     if profile.get('home_city'):
         profile_lines.append(f"  Home city: {profile['home_city']} — avoid chain restaurants or cuisine types they can get easily at home; prioritise genuinely local dishes and independent restaurants")
+    if profile.get('dietary_requirements'):
+        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — HARD CONSTRAINT. Never suggest a restaurant or dish that conflicts with these. Verify menu compatibility before recommending.")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
 
@@ -578,6 +603,7 @@ Trip details:
 - Budget range: {budget}
 - Max travel radius: {distance}
 {accommodation_block}
+{pre_planned_block}
 {client_block}
 Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
 covering breakfast, lunch, and dinner in a sensible rotation.
@@ -590,8 +616,11 @@ PERSONALISATION RULES:
   what is genuinely local to {location} and hard to replicate elsewhere.
 - Accommodation: if given, state approximate walking or transit time from that address to each
   restaurant. Use realistic street-level logic.
-- Consultant notes: treat these as hard constraints. If they mention dietary restrictions,
-  allergies, or strong dislikes, honour them absolutely — never suggest something that conflicts.
+- DIETARY REQUIREMENTS are absolute. If given, every restaurant and every suggested dish must
+  be compatible. Do not suggest a seafood restaurant to someone with a shellfish allergy.
+  Do not suggest meat dishes to a vegetarian. Verify before recommending.
+- Pre-planned meals: if a dinner reservation is already committed, do not add another dinner
+  recommendation that day — fill other slots instead, or note the day is covered.
 - Vary price tier across the day: don't make every meal fine dining or every meal street food
   unless the profile specifically calls for that.
 
@@ -641,18 +670,20 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
 
 def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
-                          accommodation=None, client_profile=None):
+                          accommodation=None, pre_planned=None, client_profile=None):
     """Call Claude to generate attractions with location details.
 
-    accommodation: optional hotel/address string used as the travel origin for
-                   distance and logistics advice.
+    accommodation:  optional hotel/address string — travel origin for distance advice.
+    pre_planned:    optional free-text — already-booked or must-see items the client
+                    has committed to; scouts avoid duplicating these.
     client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, notes — used to personalise recommendations.
+                    travel_style, dietary_requirements, notes.
     """
     if per_day is None:
         per_day = ATTRACTIONS_PER_DAY
     key = _cache_key("attraction", location, duration, categories, budget, distance, per_day,
-                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
+                     accommodation, pre_planned,
+                     json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Attraction Scout: cache hit for %s", location)
@@ -669,6 +700,14 @@ def call_attraction_scout(location, duration, categories, budget, distance, per_
         "- Accommodation: not specified — use city centre as the assumed travel base.\n"
     )
 
+    pre_planned_block = (
+        f"Already planned / committed:\n  {pre_planned}\n"
+        f"  Do NOT suggest anything that duplicates or conflicts with the above.\n"
+        f"  If a time slot is already committed, plan around it — suggest complementary nearby\n"
+        f"  stops rather than competing alternatives for the same slot.\n"
+        if pre_planned else ""
+    )
+
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -677,6 +716,8 @@ def call_attraction_scout(location, duration, categories, budget, distance, per_
         profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — factor into admission and tour costs")
     if profile.get('home_city'):
         profile_lines.append(f"  Home city: {profile['home_city']} — skip attractions that are similar to what they have at home; favour experiences genuinely unique to {location}")
+    if profile.get('dietary_requirements'):
+        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — if any attraction involves food (food markets, cooking classes, winery tours), ensure it is compatible")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
 
@@ -696,6 +737,7 @@ Trip details:
 - Budget: {budget}
 - Max travel radius: {distance}
 {accommodation_block}
+{pre_planned_block}
 {client_block}
 Generate {count} attractions ({per_day} per day across {duration} days).
 
@@ -708,8 +750,11 @@ PERSONALISATION RULES:
 - Travel style: let it shape pace and depth. An adventurous traveller gets active or off-the-
   beaten-path options; a cultural traveller gets deeper dives into history or art.
 - Budget preference: honour it in admission recommendations and any paid experiences you suggest.
+- Pre-planned commitments: never duplicate them. If the client already has a Sagrada Família
+  ticket, do not suggest Sagrada Família — suggest what to do before or after instead.
 - If accommodation is given, plan each day's attractions so the client isn't constantly
   backtracking. State approximate travel time from the accommodation for each stop.
+- Dietary requirements: if any attraction involves food, verify compatibility first.
 - Consultant notes: treat as hard constraints. Physical limitations, interests to avoid, or
   specific requests must be respected absolutely.
 
@@ -1963,6 +2008,7 @@ def generate_trip_guide():
         budget        = str(data['budget']).strip()
         distance      = str(data['distance']).strip()
         accommodation = str(data.get('accommodation', '')).strip() or None
+        pre_planned   = str(data.get('pre_planned',   '')).strip() or None
 
         # Section enable/disable flags — accept both JSON booleans and string "true"/"false"
         def _parse_bool(val, default=True):
@@ -2010,10 +2056,11 @@ def generate_trip_guide():
                 db_client = db.session.get(_Client, cid)
                 if db_client and not db_client.is_deleted:
                     client_profile = {
-                        'home_city':        db_client.home_city        or '',
-                        'preferred_budget': db_client.preferred_budget or '',
-                        'travel_style':     db_client.travel_style     or '',
-                        'notes':            db_client.notes            or '',
+                        'home_city':            db_client.home_city            or '',
+                        'preferred_budget':     db_client.preferred_budget     or '',
+                        'travel_style':         db_client.travel_style         or '',
+                        'dietary_requirements': db_client.dietary_requirements or '',
+                        'notes':                db_client.notes                or '',
                     }
                     # Strip empty strings so prompts don't mention blank fields
                     client_profile = {k: v for k, v in client_profile.items() if v}
@@ -2026,12 +2073,13 @@ def generate_trip_guide():
 
         logger.info(
             "Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) "
-            "attractions=%s(%d/d) | accommodation=%s | client_profile=%s",
+            "attractions=%s(%d/d) | accommodation=%s | pre_planned=%s | client_profile=%s",
             location, duration,
             'ON' if include_photos else 'OFF', photos_per_day,
             'ON' if include_dining else 'OFF', restaurants_per_day,
             'ON' if include_attractions else 'OFF', attractions_per_day,
             'yes' if accommodation else 'no',
+            'yes' if pre_planned   else 'no',
             'yes' if client_profile else 'no',
         )
 
@@ -2043,6 +2091,7 @@ def generate_trip_guide():
                 (location, duration, photo_interests, distance),
                 {'per_day': photos_per_day,
                  'accommodation': accommodation,
+                 'pre_planned':   pre_planned,
                  'client_profile': client_profile}
             )
         if include_dining:
@@ -2051,6 +2100,7 @@ def generate_trip_guide():
                 (location, duration, cuisines, budget, distance),
                 {'per_day': restaurants_per_day,
                  'accommodation': accommodation,
+                 'pre_planned':   pre_planned,
                  'client_profile': client_profile}
             )
         if include_attractions:
@@ -2059,6 +2109,7 @@ def generate_trip_guide():
                 (location, duration, attractions, budget, distance),
                 {'per_day': attractions_per_day,
                  'accommodation': accommodation,
+                 'pre_planned':   pre_planned,
                  'client_profile': client_profile}
             )
         logger.info("Active scout tasks: %s", list(scout_tasks.keys()))

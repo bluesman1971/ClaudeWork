@@ -74,9 +74,10 @@ class Client(db.Model):
     company          = db.Column(db.String(255), nullable=True)
     home_city        = db.Column(db.String(255), nullable=True)
     preferred_budget = db.Column(db.String(50),  nullable=True)  # e.g. 'budget', 'moderate', 'luxury'
-    travel_style     = db.Column(db.String(255), nullable=True)  # free-text tags / sentence
-    notes            = db.Column(db.Text,        nullable=True)
-    tags             = db.Column(db.String(500), nullable=True)  # comma-separated labels
+    travel_style          = db.Column(db.String(255), nullable=True)  # free-text tags / sentence
+    dietary_requirements  = db.Column(db.Text,        nullable=True)  # e.g. 'vegetarian, nut allergy'
+    notes                 = db.Column(db.Text,        nullable=True)
+    tags                  = db.Column(db.String(500), nullable=True)  # comma-separated labels
     created_by_id    = db.Column(db.Integer, db.ForeignKey('staff_users.id'), nullable=True)
     is_deleted       = db.Column(db.Boolean, nullable=False, default=False)  # soft-delete
     created_at       = db.Column(db.DateTime, nullable=False, default=_utcnow)
@@ -97,8 +98,9 @@ class Client(db.Model):
             'company':          self.company,
             'home_city':        self.home_city,
             'preferred_budget': self.preferred_budget,
-            'travel_style':     self.travel_style,
-            'notes':            self.notes,
+            'travel_style':         self.travel_style,
+            'dietary_requirements': self.dietary_requirements,
+            'notes':                self.notes,
             'tags':             self.tags,
             'created_by_id':    self.created_by_id,
             'is_deleted':       self.is_deleted,

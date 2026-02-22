@@ -81,10 +81,11 @@ def create_client():
         email            = str(data.get('email',            '')).strip() or None,
         phone            = str(data.get('phone',            '')).strip() or None,
         company          = str(data.get('company',          '')).strip() or None,
-        home_city        = str(data.get('home_city',        '')).strip() or None,
-        preferred_budget = str(data.get('preferred_budget', '')).strip() or None,
-        travel_style     = str(data.get('travel_style',     '')).strip() or None,
-        notes            = str(data.get('notes',            '')).strip() or None,
+        home_city             = str(data.get('home_city',             '')).strip() or None,
+        preferred_budget      = str(data.get('preferred_budget',      '')).strip() or None,
+        travel_style          = str(data.get('travel_style',          '')).strip() or None,
+        dietary_requirements  = str(data.get('dietary_requirements',  '')).strip() or None,
+        notes                 = str(data.get('notes',                 '')).strip() or None,
         tags             = str(data.get('tags',             '')).strip() or None,
         created_by_id    = g.current_user.id,
     )
@@ -117,7 +118,7 @@ def update_client(client_id):
 
     # Updateable fields — only overwrite if the key is present in the payload
     str_fields = ['name', 'email', 'phone', 'company', 'home_city',
-                  'preferred_budget', 'travel_style', 'notes', 'tags']
+                  'preferred_budget', 'travel_style', 'dietary_requirements', 'notes', 'tags']
     for field in str_fields:
         if field in data:
             setattr(client, field, str(data[field]).strip() or None)

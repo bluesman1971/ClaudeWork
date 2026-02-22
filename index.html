@@ -1354,6 +1354,10 @@
                     </div>
                 </div>
                 <div class="modal-field">
+                    <label>Dietary Requirements</label>
+                    <input type="text" id="cDietary" placeholder="e.g., Vegetarian, nut allergy, no shellfish, halal">
+                </div>
+                <div class="modal-field">
                     <label>Notes</label>
                     <textarea id="cNotes" placeholder="Any important preferences or context…"></textarea>
                 </div>
@@ -1462,6 +1466,13 @@
                 <div class="field" style="grid-column: 1 / -1;">
                     <label for="accommodation">Accommodation Address <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — improves distance &amp; logistics advice)</span></label>
                     <input type="text" id="accommodation" placeholder="e.g., Hotel Arts, Carrer de la Marina 19-21, Barcelona">
+                </div>
+            </div>
+
+            <div class="field-row">
+                <div class="field" style="grid-column: 1 / -1;">
+                    <label for="prePlanned">Already Planned or Must-See <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — scouts will work around these and won't duplicate them)</span></label>
+                    <input type="text" id="prePlanned" placeholder="e.g., Dinner at Tickets on Day 2, Sagrada Família visit booked for Day 1 morning">
                 </div>
             </div>
 
@@ -1805,9 +1816,10 @@
                         phone:            document.getElementById('cPhone').value.trim(),
                         company:          document.getElementById('cCompany').value.trim(),
                         home_city:        document.getElementById('cHomeCity').value.trim(),
-                        preferred_budget: document.getElementById('cBudget').value,
-                        travel_style:     document.getElementById('cTravelStyle').value.trim(),
-                        notes:            document.getElementById('cNotes').value.trim(),
+                        preferred_budget:     document.getElementById('cBudget').value,
+                        travel_style:         document.getElementById('cTravelStyle').value.trim(),
+                        dietary_requirements: document.getElementById('cDietary').value.trim(),
+                        notes:                document.getElementById('cNotes').value.trim(),
                         tags:             document.getElementById('cTags').value.trim(),
                     }),
                 });
@@ -2312,6 +2324,7 @@
             const payload = {
                 location, duration, budget, distance,
                 accommodation: document.getElementById('accommodation').value.trim(),
+                pre_planned:   document.getElementById('prePlanned').value.trim(),
                 include_photos:      sectionEnabled.photos,
                 include_dining:      sectionEnabled.dining,
                 include_attractions: sectionEnabled.attractions,
@@ -2378,6 +2391,7 @@
         function resetForm() {
             document.getElementById('tripForm').reset();
             document.getElementById('accommodation').value = '';
+            document.getElementById('prePlanned').value = '';
             // Reset other text inputs
             ['photo_other_text','cuisine_other_text','attr_other_text'].forEach(id => {
                 document.getElementById(id).value = '';
