@@ -2636,7 +2636,10 @@ Return EXACTLY one JSON object (no markdown, no other text):
                 pass
 
         if not items:
-            logger.warning("Replace Scout: failed to parse response for %s idx=%d", item_type, item_idx)
+            logger.warning(
+                "Replace Scout: failed to parse response for %s idx=%d — raw: %r",
+                item_type, item_idx, raw_text[:500]
+            )
             return jsonify({'error': 'Could not find an alternative. Try again or toggle this item off.'}), 422
 
         new_item = items[0]
