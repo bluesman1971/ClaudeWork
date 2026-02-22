@@ -88,6 +88,11 @@ Authentication is handled entirely in `auth.py`.
 5. Every subsequent request from the browser automatically sends this cookie
 6. The `@require_auth` decorator validates the cookie on every protected route, loads the user from the database into `g.current_user`, then slides the token expiry (re-issues a fresh 8-hour cookie on each request so active sessions don't expire mid-use)
 
+### CSRF defence
+All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-With: XMLHttpRequest` header. The browser never attaches this header automatically on cross-site requests, so it cannot be forged by a malicious third-party page even if it can trigger a request with the user's session cookie. The `apiFetch()` wrapper in `index.html` adds this header to every call automatically.
+
+**Important when calling the API programmatically (e.g. curl or test scripts):** you must include both the `tm_token` cookie and the `X-Requested-With: XMLHttpRequest` header on all POST/PUT/DELETE requests, or you will receive HTTP 403.
+
 ### Creating the first admin user
 There is no registration UI. Staff accounts are created by an admin using the Flask CLI:
 ```bash
@@ -109,21 +114,49 @@ Failed login attempts are tracked per IP address in memory. After 10 failures wi
 The core feature is the `/generate` endpoint in `app.py`. When a consultant clicks "Generate", the app:
 
 1. **Validates the request** — checks location, duration (1–14 days), and which categories are enabled (photos, restaurants, attractions)
-2. **Runs up to 3 scouts in parallel** using `ThreadPoolExecutor(max_workers=3)`:
+2. **Loads the client profile** — if a `client_id` is sent with the request, the client's `home_city`, `preferred_budget`, `travel_style`, `dietary_requirements`, and `notes` are loaded from the DB and injected into each scout prompt for personalisation
+3. **Reads optional trip context** — `accommodation` (hotel name/address used as the travel origin for distance estimates) and `pre_planned` (already-committed events the guide should work around) are accepted as request fields and passed to each scout
+4. **Runs up to 3 scouts in parallel** using `ThreadPoolExecutor(max_workers=3)`:
    - `call_photo_scout` — photography locations with timing, setup, and pro tips
-   - `call_restaurant_scout` — dining recommendations with cuisine, price range, and booking notes
-   - `call_attraction_scout` — sightseeing with practical visit info
-3. **Each scout** sends a structured prompt to Claude Haiku and parses the response as JSON lines (one JSON object per line)
-4. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API. Permanently closed venues are filtered out. This runs concurrently inside each scout using another `ThreadPoolExecutor`
-5. **Retry logic** — if a scout returns 0 results (parse failure or all venues filtered), it retries up to 2 more times with a 1-second delay between attempts
-6. **Session store** — verified results are stored in a server-side in-memory dict (`_session_store`) keyed by a UUID, with a 1-hour TTL. This lets `/finalize` retrieve the results without re-running the scouts
-7. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs), and returns it to the browser
+   - `call_restaurant_scout` — dining recommendations with cuisine, price range, and booking notes; respects dietary requirements as a hard constraint
+   - `call_attraction_scout` — sightseeing with practical visit info; avoids duplicating pre-planned commitments
+5. **Each scout** sends a structured prompt to Claude Haiku and parses the response as JSON lines (one JSON object per line). Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
+6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API. Permanently closed venues are filtered out. This runs concurrently inside each scout using another `ThreadPoolExecutor`
+7. **Retry logic** — if a scout returns 0 results (parse failure or all venues filtered), it retries up to 2 more times with a 1-second delay between attempts
+8. **Session store** — verified results are stored in a server-side in-memory dict (`_session_store`) keyed by a UUID, with a 1-hour TTL. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker
+9. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs), and returns it to the browser
 
 ### In-memory caching
-Scout results are cached in `_cache` (a plain dict) for 1 hour keyed on the combination of location, duration, and preferences. Empty results are never cached so a failed parse always retries fresh on the next request.
+Scout results are cached in `_cache` (a plain dict) for 1 hour keyed on the combination of location, duration, preferences, accommodation, pre_planned, and client profile. Empty results are never cached so a failed parse always retries fresh on the next request.
 
 ### Thread safety note
 All three executor sites wrap their callables in `_with_app_context(fn, *args)`. This ensures each thread has its own independent Flask application context. Sharing a single AppContext across threads is not safe — each thread must push and pop its own.
+
+---
+
+## Per-item replacement (`/replace`)
+
+The review screen lets consultants request one alternative for any item they dislike. This is handled by `POST /replace` in `app.py`.
+
+**How it works:**
+
+1. The frontend sends `session_id`, `trip_id`, `type` (photos/restaurants/attractions), `index`, `day`, `meal_type`, and `exclude_names` (names of all current items in that category)
+2. The endpoint resolves the original trip parameters (location, budget, distance, cuisine/interest preferences) from the DB `Trip` record — this is intentional for multi-worker safety (avoids relying on the in-memory session store which may not be present on the worker handling this request)
+3. The client profile is reloaded from the DB if the trip has a `client_id`
+4. A focused single-item prompt is built with an explicit exclusion block listing all current item names, so the model cannot return a duplicate
+5. The Anthropic API is called with `max_tokens=1200`
+6. **Response parsing:** The model sometimes wraps output in markdown code fences (` ```json ... ``` `). The endpoint strips these before attempting JSON parsing. It first tries `_parse_json_lines()` (for responses where the JSON is on a single line), then falls back to `json.loads()` (for pretty-printed multi-line responses)
+7. Google Places verification runs on the replacement if enabled
+8. The DB `Trip` record's relevant `raw_*` JSON array is updated at the given index
+9. The in-memory session store is also updated if still alive
+10. Returns `{ "item": { ...scout item dict... } }`
+
+**Frontend integration (`index.html`):**
+
+- `buildReviewItem(type, item, idx)` — builds a wrapper div containing the item row and a hidden inline edit panel. Each item row has two action buttons: **Edit** and **Alt**
+- `toggleEditPanel(type, idx)` — opens/closes the inline edit panel; focuses the name input on open
+- `saveItemEdit(type, idx)` — reads name and consultant notes from the panel, writes back to `rawData`, updates the visible name in the DOM
+- `replaceItem(type, idx)` — calls `POST /replace`, swaps the item in `rawData`, rebuilds the wrapper in-place via `buildReviewItem()`, applies a brief green flash animation, preserves the item's approval/rejection state
 
 ---
 
@@ -146,35 +179,52 @@ Travel consultant / admin accounts. Passwords are stored as bcrypt hashes (12 ro
 | created_at | DateTime | UTC |
 
 ### `Client`
-Travel client records managed by staff.
+Travel client records managed by staff. Reference codes are auto-generated as CLT-001, CLT-002, etc.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | Integer PK | Auto-increment |
-| reference_code | String(20) | Auto-generated: CLT-001, CLT-002… |
+| reference_code | String(20) | Auto-generated: CLT-001, CLT-002… Unique, indexed |
 | name | String(255) | Required |
-| email, phone, company | String | Optional contact details |
-| home_city | String(100) | For context in recommendations |
-| preferred_budget | String(50) | e.g. "mid-range", "luxury" |
-| travel_style | String(100) | e.g. "adventure", "relaxation" |
-| notes, tags | Text/String | Freeform |
+| email | String(255) | Optional |
+| phone | String(50) | Optional |
+| company | String(255) | Optional |
+| home_city | String(255) | Used to personalise scout prompts |
+| preferred_budget | String(50) | e.g. "budget", "moderate", "luxury" — injected into prompts |
+| travel_style | String(255) | Free-text, e.g. "adventure traveller, prefers off-the-beaten-path" |
+| dietary_requirements | Text | Hard constraint in restaurant scout, e.g. "vegetarian, nut allergy" |
+| notes | Text | General freeform notes about the client |
+| tags | String(500) | Comma-separated labels for filtering |
 | is_deleted | Boolean | Soft-delete flag |
 | created_by_id | FK → StaffUser | Which staff member created the record |
 | created_at, updated_at | DateTime | UTC |
 
 ### `Trip`
-Saved travel guide records.
+Saved travel guide records. Stores both the raw AI output and the final HTML.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | Integer PK | Auto-increment |
-| client_id | FK → Client | Optional (can be ungrouped) |
+| client_id | FK → Client | Optional — links trip to a client record |
 | created_by_id | FK → StaffUser | Which staff member generated it |
-| location | String(200) | Destination name |
-| duration_days | Integer | Trip length |
-| status | String(20) | `draft`, `review`, `approved`, `delivered` |
-| guide_data | JSON | Raw structured scout output |
+| title | String(255) | Optional, auto-generated if blank |
+| status | String(20) | `draft` or `finalized` |
+| location | String(255) | Destination name |
+| duration | Integer | Trip length in days |
+| budget | String(50) | Budget preference used in prompts |
+| distance | String(50) | Travel radius used in prompts |
+| include_photos/dining/attractions | Boolean | Which scout categories were enabled |
+| photos/restaurants/attractions_per_day | Integer | Counts per day for each category |
+| photo_interests | String(500) | Photography style preferences |
+| cuisines | String(500) | Cuisine preferences for restaurant scout |
+| attraction_cats | String(500) | Attraction category preferences |
+| raw_photos | Text (JSON) | Full verified item dicts from photo scout |
+| raw_restaurants | Text (JSON) | Full verified item dicts from restaurant scout |
+| raw_attractions | Text (JSON) | Full verified item dicts from attraction scout |
+| approved_photo/restaurant/attraction_indices | Text (JSON) | Index arrays from `/finalize` review step |
 | final_html | Text | Rendered HTML guide |
+| colors | String(500) (JSON) | Color theme dict |
+| session_id | String(36) | UUID from `/generate` — links DB record to in-memory session |
 | is_deleted | Boolean | Soft-delete flag |
 | created_at, updated_at | DateTime | UTC |
 
@@ -182,6 +232,13 @@ Saved travel guide records.
 `app.py` reads `DATABASE_URL` from the environment. A `_safe_db_url()` helper parses it through SQLAlchemy's `make_url()` before use — this correctly percent-encodes any special characters in the password, so the raw Supabase connection string can be pasted directly into Railway without manual URL-encoding.
 
 For SQLite (local dev only), WAL (Write-Ahead Logging) mode is enabled on every new connection via `sqlalchemy.event.listen`. This allows concurrent readers and a single writer simultaneously, which prevents "database is locked" errors during local testing.
+
+### Schema migrations
+`db.create_all()` runs at startup and creates any tables that don't yet exist. It does **not** add new columns to existing tables.
+
+To handle this, `app.py` runs a list of `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements immediately after `db.create_all()`. This is safe to re-run on every startup — PostgreSQL's `IF NOT EXISTS` clause is a no-op if the column already exists. SQLite doesn't support `IF NOT EXISTS` on `ADD COLUMN`, so the migration block catches and logs the exception without crashing.
+
+**When adding a new column to an existing model:** add the column to `models.py` as usual, then add a corresponding `ALTER TABLE <table> ADD COLUMN IF NOT EXISTS <col> <type>` entry to the `_migrations` list in `app.py`. The column will be created on the next deploy.
 
 ---
 
@@ -220,16 +277,31 @@ All routes except `/`, `/health`, and `/auth/login` require authentication (vali
 | GET | `/auth/me` | Returns current user's profile |
 | POST | `/generate` | Runs scouts, returns structured recommendations + session ID |
 | POST | `/finalize` | Assembles and returns final HTML guide from session data |
-| GET | `/clients` | Lists all active clients |
+| POST | `/replace` | Replaces a single review item with an alternative — see below |
+| GET | `/clients` | Lists all active clients (newest first) |
 | POST | `/clients` | Creates a new client |
 | GET | `/clients/<id>` | Gets one client with their trips |
-| PUT | `/clients/<id>` | Updates client fields |
-| DELETE | `/clients/<id>` | Soft-deletes a client |
-| GET | `/trips` | Lists all trips for current user |
+| PUT | `/clients/<id>` | Updates client fields (partial update supported) |
+| DELETE | `/clients/<id>` | Soft-deletes a client (trips are preserved) |
+| GET | `/trips` | Lists saved trips for current user |
 | POST | `/trips` | Saves a trip guide |
 | GET | `/trips/<id>` | Gets one trip |
 | PUT | `/trips/<id>` | Updates trip fields/status |
 | DELETE | `/trips/<id>` | Soft-deletes a trip |
+
+### `POST /replace` — request body
+```json
+{
+  "session_id":    "uuid-from-generate",
+  "trip_id":       5,
+  "type":          "restaurants",
+  "index":         0,
+  "day":           1,
+  "meal_type":     "lunch",
+  "exclude_names": ["Restaurant A", "Restaurant B"]
+}
+```
+Returns `{ "item": { ...full scout item dict... } }` on success, or `{ "error": "..." }` with HTTP 422 if the model fails to produce a parseable alternative.
 
 ---
 
@@ -245,7 +317,7 @@ Railway watches the `main` branch of the GitHub repository (`bluesman1971/Claude
    gunicorn wsgi:application --workers 2 --threads 4 --worker-class gthread --bind 0.0.0.0:$PORT --timeout 120
    ```
 3. Gunicorn imports `wsgi.py`, which imports `app.py` as `application`
-4. `app.py` module-level code runs: loads env vars, configures the DB, registers blueprints, creates tables if they don't exist
+4. `app.py` module-level code runs: loads env vars, configures the DB, registers blueprints, creates tables if they don't exist, runs column migrations
 5. Gunicorn starts serving on the Railway-assigned `$PORT`
 
 ### Gunicorn configuration explained
@@ -253,7 +325,6 @@ Railway watches the `main` branch of the GitHub repository (`bluesman1971/Claude
 - `--threads 4` — 4 threads per worker (handles concurrent requests within each process)
 - `--worker-class gthread` — thread-based worker (required for `--threads` to work)
 - `--timeout 120` — 120-second request timeout (needed because Claude API calls can take 30–60 seconds)
-- `--access-logfile -` / `--error-logfile -` — logs to stdout/stderr so Railway captures them
 
 ### Railway variables to set
 ```
@@ -330,16 +401,16 @@ Railway → your service → **Deployments** → click the active deployment →
 
 ## Known limitations and future work
 
-- **In-memory session store and cache** — `_session_store` and `_cache` in `app.py` are plain Python dicts. They reset on every deploy and are not shared between Gunicorn workers. For a multi-worker setup this can cause "session not found" errors if the `/finalize` request hits a different worker than `/generate`. A Redis store (e.g. Railway Redis add-on) would fix this properly.
+- **In-memory session store and cache** — `_session_store` and `_cache` in `app.py` are plain Python dicts. They reset on every deploy and are not shared between Gunicorn workers. For a multi-worker setup this can cause "session not found" errors if the `/finalize` request hits a different worker than `/generate`. The `/replace` endpoint works around this by always resolving trip parameters from the DB `Trip` record rather than the session store — but `/finalize` still uses the session store and could be affected. A Redis store (e.g. Railway Redis add-on) would fix this properly.
 
 - **In-memory login rate limiter** — resets on restart, and is per-worker (not shared across workers). Good enough for defence-in-depth, but a Redis-backed limiter would be more robust.
 
-- **No database migrations** — `db.create_all()` creates tables on startup but does not handle schema changes to existing tables. If you add a column to a model, you will need to either drop and recreate the table (losing data) or run an `ALTER TABLE` manually in the Supabase SQL editor. A proper migration tool (Flask-Migrate / Alembic) would be the right long-term solution.
+- **Schema migrations are append-only** — the `_migrations` list in `app.py` handles adding new columns to existing tables automatically on startup. However, renaming or removing columns, adding constraints, or changing column types still requires manual intervention (run the SQL directly in the Supabase dashboard). For complex schema evolution, adopt Flask-Migrate / Alembic.
 
 - **Single-file frontend** — `index.html` is a large single file containing all HTML, CSS, and JavaScript. It works well but would benefit from being split into components if the UI grows significantly.
 
 - **No email delivery** — there is no password reset flow. Forgotten passwords require an admin to create a new account or update the hash directly in the database.
 
-- **AI provider is single-vendor and single-model** — all three scouts use the same Anthropic model, set via the `SCOUT_MODEL` environment variable. Switching to a different Anthropic model is trivial (just update the env var). Switching to a different provider (OpenAI, Google Gemini, etc.) requires changing the client initialisation in `app.py` and updating the API call and response extraction in each of the three scout functions — roughly 6–8 lines of code plus a `requirements.txt` change. The prompts, retry logic, and JSON parsing are all provider-agnostic and would not need to change. If per-scout model selection is ever needed (e.g. a cheaper model for restaurants, a smarter one for photos), separate env vars (`PHOTO_SCOUT_MODEL`, `RESTAURANT_SCOUT_MODEL`, etc.) would be the clean way to add that.
+- **AI provider is single-vendor and single-model** — all three scouts use the same Anthropic model, set via the `SCOUT_MODEL` environment variable. Switching to a different Anthropic model is trivial (just update the env var). Switching to a different provider (OpenAI, Google Gemini, etc.) requires changing the client initialisation in `app.py` and updating the API call and response extraction in each of the three scout functions and the `/replace` endpoint — roughly 8–10 lines of code plus a `requirements.txt` change. The prompts, retry logic, and JSON parsing are all provider-agnostic and would not need to change.
 
-- **API cost** — Claude Haiku is the cheapest Anthropic model and was chosen deliberately to keep per-generation costs low, but each "Generate" click makes three separate API calls (one per scout), each with a large prompt and up to ~6,000 output tokens. High-volume usage will accumulate meaningful API costs. Monitor usage in the Anthropic console. If cost becomes a concern, options include: reducing `PHOTOS_PER_DAY`, `RESTAURANTS_PER_DAY`, and `ATTRACTIONS_PER_DAY` constants in `app.py`; capping `max_tokens` on each scout call; switching to a smaller/cheaper model via `SCOUT_MODEL`; or implementing a stricter server-side cache (currently results are cached 1 hour per location+duration+preferences combination, so repeat searches are free).
+- **API cost** — Claude Haiku is the cheapest Anthropic model and was chosen deliberately to keep per-generation costs low, but each "Generate" click makes three separate API calls (one per scout), each with a large prompt and up to ~6,000 output tokens. High-volume usage will accumulate meaningful API costs. Monitor usage in the Anthropic console. If cost becomes a concern, options include: reducing `PHOTOS_PER_DAY`, `RESTAURANTS_PER_DAY`, and `ATTRACTIONS_PER_DAY` constants in `app.py`; capping `max_tokens` on each scout call; switching to a smaller/cheaper model via `SCOUT_MODEL`; or implementing a stricter server-side cache (currently results are cached 1 hour per location+duration+preferences+client profile combination, so repeat searches are free).
