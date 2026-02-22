@@ -2617,18 +2617,14 @@ Return EXACTLY one JSON object (no markdown, no other text):
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}]
         )
-        logger.info(
-            "Replace Scout API: stop_reason=%s content_types=%s",
-            message.stop_reason,
-            [type(b).__name__ for b in message.content]
-        )
         # Extract text from the first text-type content block
         raw_text = ''
         for block in message.content:
-            logger.info("Replace Scout block: type=%s text_repr=%r", type(block).__name__, repr(getattr(block, 'text', None))[:200])
-            if hasattr(block, 'text') and block.text:
-                raw_text = block.text.strip()
-                break
+            block_text = getattr(block, 'text', None)
+            if block_text is not None:
+                raw_text = str(block_text).strip()
+                if raw_text:
+                    break
 
         # Strip markdown code fences if the model wrapped the output (e.g. ```json ... ```)
         if raw_text.startswith('```'):
@@ -2647,10 +2643,7 @@ Return EXACTLY one JSON object (no markdown, no other text):
                 pass
 
         if not items:
-            logger.warning(
-                "Replace Scout: failed to parse response for %s idx=%d — raw: %r",
-                item_type, item_idx, raw_text[:500]
-            )
+            logger.warning("Replace Scout: failed to parse response for %s idx=%d", item_type, item_idx)
             return jsonify({'error': 'Could not find an alternative. Try again or toggle this item off.'}), 422
 
         new_item = items[0]
