@@ -148,6 +148,7 @@ class Trip(db.Model):
     photo_interests     = db.Column(db.String(500), nullable=True)
     cuisines            = db.Column(db.String(500), nullable=True)
     attraction_cats     = db.Column(db.String(500), nullable=True)
+    accommodation       = db.Column(db.String(500), nullable=True)  # hotel/address used as travel origin
 
     # ── Raw AI suggestions (full verified item dicts from /generate) ─────────
     raw_photos      = db.Column(db.Text, nullable=True)   # JSON array
@@ -191,6 +192,7 @@ class Trip(db.Model):
             'photo_interests':      self.photo_interests,
             'cuisines':             self.cuisines,
             'attraction_cats':      self.attraction_cats,
+            'accommodation':        self.accommodation,
             # suggestions
             'raw_photos':           _json.loads(self.raw_photos)      if self.raw_photos      else [],
             'raw_restaurants':      _json.loads(self.raw_restaurants) if self.raw_restaurants else [],

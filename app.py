@@ -141,6 +141,7 @@ with app.app_context():
     # after the initial schema was deployed.  Safe to re-run on every startup.
     _migrations = [
         "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT",
+        "ALTER TABLE trips ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)",
     ]
     try:
         with db.engine.connect() as _conn:
@@ -379,6 +380,85 @@ def verify_places_batch(items, name_key, address_key, location_context):
             removed, len(items), perm, temp
         )
     return verified, removed
+
+
+def _geocode_accommodation(address: str):
+    """
+    Look up the lat/lng of the accommodation address using the Places API
+    text search (same key and endpoint already used for venue verification).
+    Returns (lat, lng) floats, or (None, None) on failure / no API key.
+    """
+    if not PLACES_VERIFY_ENABLED or not address:
+        return None, None
+    try:
+        payload = json.dumps({'textQuery': address, 'maxResultCount': 1}).encode()
+        req = urllib.request.Request(
+            PLACES_API_URL,
+            data=payload,
+            headers={
+                'Content-Type':    'application/json',
+                'X-Goog-Api-Key':  GOOGLE_PLACES_API_KEY,
+                'X-Goog-FieldMask': 'places.location',
+            },
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=PLACES_VERIFY_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        places = data.get('places', [])
+        if not places:
+            return None, None
+        loc = places[0].get('location', {})
+        lat, lng = loc.get('latitude'), loc.get('longitude')
+        if lat is not None and lng is not None:
+            logger.info("Accommodation geocoded: %r → (%.5f, %.5f)", address[:60], lat, lng)
+            return float(lat), float(lng)
+    except Exception as exc:
+        logger.warning("Accommodation geocoding failed for %r: %s", address[:60], exc)
+    return None, None
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Return the great-circle distance in metres between two lat/lng points."""
+    import math
+    R = 6_371_000  # Earth radius in metres
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lng2 - lng1)
+    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _format_distance(metres: float) -> str:
+    """
+    Format a straight-line distance as a human-readable travel-time estimate.
+    Uses 80 m/min walking speed — a comfortable urban pace that accounts for
+    pavements and crossings without being as pessimistic as 60 m/min.
+    Straight-line distances are always shorter than actual routes, so the
+    walking-time estimate is intentionally a lower bound; the label says
+    '~' throughout to signal it is approximate.
+    """
+    walk_min = max(1, round(metres / 80))
+    if metres < 150:
+        return f"~{round(metres / 10) * 10} m · ~{walk_min} min walk"
+    if metres < 1000:
+        return f"~{round(metres / 50) * 50} m · ~{walk_min} min walk"
+    km = metres / 1000
+    return f"~{km:.1f} km · ~{walk_min} min walk"
+
+
+def _apply_distances(items: list, acc_lat: float, acc_lng: float) -> None:
+    """
+    Overwrite the `travel_time` field on each item that has verified
+    coordinates (_lat / _lng) with a haversine-derived distance estimate.
+    Items without coordinates (unverified) keep their Claude-generated text.
+    Mutates items in-place — no return value.
+    """
+    for item in items:
+        lat = item.get('_lat')
+        lng = item.get('_lng')
+        if lat is not None and lng is not None:
+            metres = _haversine_m(acc_lat, acc_lng, lat, lng)
+            item['travel_time'] = _format_distance(metres)
 
 
 def get_color_palette(location):
@@ -1963,7 +2043,7 @@ def _with_app_context(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 
-def _run_single_scout(name, fn, args, kwargs, location):
+def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=None):
     """
     Call one scout function and, when Google Places verification is enabled,
     immediately verify the returned items and filter out closed places.
@@ -1973,6 +2053,10 @@ def _run_single_scout(name, fn, args, kwargs, location):
     all" the same as "scout returned nothing" — both cases result in an empty
     list that triggers a retry.
 
+    If accommodation_coords is a (lat, lng) tuple, haversine distances are
+    computed from that point to each verified item and written into travel_time.
+    Unverified items (no _lat/_lng) keep the Claude-generated text estimate.
+
     Raises on API/network errors so the caller can catch and decide whether to
     retry.  Returns a list that may be empty if the scout produced no parseable
     results or all results were filtered out by Places.
@@ -1980,6 +2064,8 @@ def _run_single_scout(name, fn, args, kwargs, location):
     items = fn(*args, **kwargs)
     if items and PLACES_VERIFY_ENABLED:
         items, _ = verify_places_batch(items, 'name', 'address', location)
+    if items and accommodation_coords and accommodation_coords[0] is not None:
+        _apply_distances(items, accommodation_coords[0], accommodation_coords[1])
     return items
 
 
@@ -2131,6 +2217,25 @@ def generate_trip_guide():
             )
         logger.info("Active scout tasks: %s", list(scout_tasks.keys()))
 
+        # ── Geocode accommodation for distance calculations ─────────────────
+        # If the consultant supplied a hotel / address, look it up once via the
+        # Places API to get coordinates.  _run_single_scout then computes a
+        # straight-line (haversine) distance from those coordinates to each
+        # verified item and writes it into the travel_time field.  This is
+        # intentionally an approximation — it does not require the Distance
+        # Matrix API and uses no additional quota beyond the Places key already
+        # in use for venue verification.
+        accommodation_coords = (None, None)
+        if accommodation and PLACES_VERIFY_ENABLED:
+            accommodation_coords = _geocode_accommodation(accommodation)
+            if accommodation_coords[0] is not None:
+                logger.info(
+                    "Accommodation geocoded for distance calc: (%.5f, %.5f)",
+                    *accommodation_coords
+                )
+            else:
+                logger.info("Accommodation geocoding returned no result — travel_time from Claude")
+
         # ── Initial parallel scout run ─────────────────────────────────────
         # Each future calls _run_single_scout, which runs the Claude scout and
         # then immediately runs Google Places verification on the results.
@@ -2146,7 +2251,10 @@ def generate_trip_guide():
 
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(_with_app_context, _run_single_scout, name, fn, args, kwargs, location): name
+                executor.submit(
+                    _with_app_context, _run_single_scout,
+                    name, fn, args, kwargs, location, accommodation_coords
+                ): name
                 for name, (fn, args, kwargs) in scout_tasks.items()
             }
             for future in as_completed(futures):
@@ -2177,7 +2285,7 @@ def generate_trip_guide():
             for name in empty_scouts:
                 fn, args, kwargs = scout_tasks[name]
                 try:
-                    items = _run_single_scout(name, fn, args, kwargs, location)
+                    items = _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
                     results[name] = items
                     logger.info(
                         "Scout '%s': retry %d returned %d item(s)",
@@ -2264,6 +2372,7 @@ def generate_trip_guide():
                 photo_interests      = photo_interests or None,
                 cuisines             = cuisines or None,
                 attraction_cats      = attractions or None,
+                accommodation        = accommodation,
                 raw_photos           = json.dumps(results['photos']),
                 raw_restaurants      = json.dumps(results['restaurants']),
                 raw_attractions      = json.dumps(results['attractions']),
@@ -2656,6 +2765,12 @@ Return EXACTLY one JSON object (no markdown, no other text):
             if verified:
                 new_item = verified[0]
             # If Places returns nothing the item is still usable — just unverified
+
+        # ── Apply haversine distance from accommodation if available ────────
+        if db_trip and db_trip.accommodation and PLACES_VERIFY_ENABLED:
+            acc_lat, acc_lng = _geocode_accommodation(db_trip.accommodation)
+            if acc_lat is not None:
+                _apply_distances([new_item], acc_lat, acc_lng)
 
         # ── Update the raw item in the DB trip record ──────────────────────
         if db_trip:
