@@ -2625,6 +2625,7 @@ Return EXACTLY one JSON object (no markdown, no other text):
         # Extract text from the first text-type content block
         raw_text = ''
         for block in message.content:
+            logger.info("Replace Scout block: type=%s text_repr=%r", type(block).__name__, repr(getattr(block, 'text', None))[:200])
             if hasattr(block, 'text') and block.text:
                 raw_text = block.text.strip()
                 break
