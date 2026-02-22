@@ -2628,10 +2628,12 @@ Return EXACTLY one JSON object (no markdown, no other text):
 
         # Strip markdown code fences if the model wrapped the output (e.g. ```json ... ```)
         if raw_text.startswith('```'):
-            raw_text = raw_text.split('```', 2)[-1]          # drop opening fence
-            raw_text = raw_text.rsplit('```', 1)[0].strip()   # drop closing fence
-            if raw_text.startswith('json'):
-                raw_text = raw_text[4:].strip()
+            # split('```', 2) → ['', '<lang>\n<content>\n', ''] — take middle part
+            parts = raw_text.split('```', 2)
+            inner = parts[1] if len(parts) >= 2 else raw_text
+            if inner.startswith('json'):
+                inner = inner[4:]
+            raw_text = inner.strip()
 
         # Parse the single returned JSON object
         items = _parse_json_lines(raw_text, "Replace Scout")
