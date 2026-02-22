@@ -2617,7 +2617,17 @@ Return EXACTLY one JSON object (no markdown, no other text):
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw_text = message.content[0].text.strip()
+        logger.info(
+            "Replace Scout API: stop_reason=%s content_types=%s",
+            message.stop_reason,
+            [type(b).__name__ for b in message.content]
+        )
+        # Extract text from the first text-type content block
+        raw_text = ''
+        for block in message.content:
+            if hasattr(block, 'text') and block.text:
+                raw_text = block.text.strip()
+                break
 
         # Strip markdown code fences if the model wrapped the output (e.g. ```json ... ```)
         if raw_text.startswith('```'):
