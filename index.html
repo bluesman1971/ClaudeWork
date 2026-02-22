@@ -893,6 +893,109 @@
         .review-status-dot.verified   { background: #27ae60; }
         .review-status-dot.unverified { background: var(--rule); }
 
+        /* ── Item action buttons (edit / replace) ── */
+        .review-item-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+            align-items: center;
+        }
+        .review-action-btn {
+            padding: 3px 9px;
+            border: 1px solid var(--rule);
+            background: transparent;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.6rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            border-radius: 0;
+            line-height: 1.6;
+        }
+        .review-action-btn:hover { background: var(--ink); color: var(--white); border-color: var(--ink); }
+        .review-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .review-action-btn.replacing {
+            background: var(--sand);
+            border-color: var(--rule);
+            color: var(--ink-2);
+            cursor: not-allowed;
+        }
+
+        /* ── Inline edit panel ── */
+        .review-edit-panel {
+            display: none;
+            background: var(--bg);
+            border-top: 1px dashed var(--rule);
+            padding: 14px 16px;
+            margin: 0 -0px;
+        }
+        .review-edit-panel.open { display: block; }
+        .review-edit-panel textarea {
+            width: 100%;
+            min-height: 68px;
+            resize: vertical;
+            border: 1px solid var(--rule);
+            border-bottom: 2px solid var(--ink);
+            background: var(--white);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 300;
+            color: var(--ink);
+            padding: 9px 12px;
+            border-radius: 0;
+            margin-bottom: 10px;
+        }
+        .review-edit-panel textarea:focus { outline: none; border-bottom-color: var(--accent); }
+        .review-edit-panel label {
+            display: block;
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--ink-2);
+            margin-bottom: 5px;
+        }
+        .review-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+        .review-edit-save {
+            padding: 6px 18px;
+            background: var(--ink);
+            color: var(--white);
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-radius: 0;
+        }
+        .review-edit-save:hover { background: #333; }
+        .review-edit-cancel {
+            padding: 6px 14px;
+            background: transparent;
+            color: var(--ink-2);
+            border: 1px solid var(--rule);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-radius: 0;
+        }
+        .review-edit-cancel:hover { background: var(--sand); }
+
+        /* ── Replaced / new item flash ── */
+        @keyframes itemFlash {
+            0%   { background: #eaf7ee; }
+            100% { background: transparent; }
+        }
+        .review-item.just-replaced { animation: itemFlash 1.4s ease-out forwards; }
+
         /* ── Finalizing state ── */
         .finalizing {
             display: none;
@@ -2067,6 +2170,9 @@
         }
 
         function buildReviewItem(type, item, idx) {
+            const wrapper = document.createElement('div');
+            wrapper.id = `review-wrapper-${type}-${idx}`;
+
             const row = document.createElement('div');
             row.className = 'review-item';
             row.id = `review-item-${type}-${idx}`;
@@ -2094,11 +2200,135 @@
             row.innerHTML = `
                 <button class="review-item-toggle" id="toggle-${type}-${idx}"
                         onclick="toggleItem('${type}', ${idx})" title="Toggle this item"></button>
-                <span class="review-item-name">${esc(item.name || 'Unnamed')}</span>
+                <span class="review-item-name" id="name-${type}-${idx}">${esc(item.name || 'Unnamed')}</span>
                 <div class="review-item-tags">${tags}</div>
+                <div class="review-item-actions">
+                    <button class="review-action-btn" id="edit-btn-${type}-${idx}"
+                            onclick="toggleEditPanel('${type}', ${idx})" title="Edit name or notes">Edit</button>
+                    <button class="review-action-btn" id="replace-btn-${type}-${idx}"
+                            onclick="replaceItem('${type}', ${idx})" title="Get an alternative suggestion">Alt</button>
+                </div>
                 <div class="review-status-dot ${dotClass}" title="${isVerified ? 'Verified open' : 'Unverified'}"></div>`;
 
-            return row;
+            // Inline edit panel (hidden by default)
+            const editPanel = document.createElement('div');
+            editPanel.className = 'review-edit-panel';
+            editPanel.id = `edit-panel-${type}-${idx}`;
+            editPanel.innerHTML = `
+                <label>Name</label>
+                <input type="text" id="edit-name-${type}-${idx}"
+                       value="${esc(item.name || '')}"
+                       style="width:100%;border:1px solid var(--rule);border-bottom:2px solid var(--ink);
+                              padding:7px 10px;font-family:Inter,sans-serif;font-size:0.85rem;
+                              background:var(--white);margin-bottom:10px;border-radius:0;">
+                <label>Notes (visible to consultant only — won't appear in final guide)</label>
+                <textarea id="edit-notes-${type}-${idx}" placeholder="Add context, corrections, or reminders…">${esc(item._consultant_notes || '')}</textarea>
+                <div class="review-edit-actions">
+                    <button class="review-edit-cancel" onclick="toggleEditPanel('${type}', ${idx})">Cancel</button>
+                    <button class="review-edit-save" onclick="saveItemEdit('${type}', ${idx})">Save</button>
+                </div>`;
+
+            wrapper.appendChild(row);
+            wrapper.appendChild(editPanel);
+            return wrapper;
+        }
+
+        // ── Edit functions ──────────────────────────────────────────────────
+        function toggleEditPanel(type, idx) {
+            const panel = document.getElementById(`edit-panel-${type}-${idx}`);
+            const btn   = document.getElementById(`edit-btn-${type}-${idx}`);
+            const isOpen = panel.classList.toggle('open');
+            btn.textContent = isOpen ? 'Done' : 'Edit';
+            if (isOpen) document.getElementById(`edit-name-${type}-${idx}`).focus();
+        }
+
+        function saveItemEdit(type, idx) {
+            const newName  = document.getElementById(`edit-name-${type}-${idx}`).value.trim();
+            const newNotes = document.getElementById(`edit-notes-${type}-${idx}`).value.trim();
+
+            if (!newName) return;  // don't allow clearing the name
+
+            // Update the live data in rawData
+            const arr = type === 'photos' ? rawData.photos
+                      : type === 'restaurants' ? rawData.restaurants
+                      : rawData.attractions;
+            arr[idx].name = newName;
+            arr[idx]._consultant_notes = newNotes;
+
+            // Update the visible name in the row
+            document.getElementById(`name-${type}-${idx}`).textContent = newName;
+
+            // Close the panel
+            toggleEditPanel(type, idx);
+        }
+
+        // ── Replace function ─────────────────────────────────────────────────
+        async function replaceItem(type, idx) {
+            if (!rawData) return;
+
+            const btn = document.getElementById(`replace-btn-${type}-${idx}`);
+            btn.textContent = '…';
+            btn.classList.add('replacing');
+            btn.disabled = true;
+
+            // Collect names of all current items in this category to exclude
+            const arr = type === 'photos' ? rawData.photos
+                      : type === 'restaurants' ? rawData.restaurants
+                      : rawData.attractions;
+            const excludeNames = arr.map(it => it.name).filter(Boolean);
+
+            // The item we're replacing (for context: day, meal_type, etc.)
+            const currentItem = arr[idx];
+
+            try {
+                const response = await apiFetch('/replace', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        session_id:    rawData.session_id,
+                        trip_id:       rawData.trip_id || null,
+                        type:          type,
+                        index:         idx,
+                        day:           currentItem.day || 1,
+                        meal_type:     currentItem.meal_type || null,
+                        exclude_names: excludeNames,
+                    })
+                });
+
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Could not find an alternative');
+
+                // Slot the new item in, preserving approval state
+                arr[idx] = result.item;
+
+                // Rebuild just this wrapper in the DOM
+                const wrapper  = document.getElementById(`review-wrapper-${type}-${idx}`);
+                const newWrapper = buildReviewItem(type, result.item, idx);
+                // Re-apply rejection state if it was toggled off
+                if (!approvalState[type][idx]) {
+                    const newRow = newWrapper.querySelector('.review-item');
+                    const newToggle = newWrapper.querySelector('.review-item-toggle');
+                    if (newRow)    newRow.classList.add('rejected');
+                    if (newToggle) newToggle.classList.add('off');
+                }
+                wrapper.replaceWith(newWrapper);
+
+                // Flash the new item green briefly
+                const newRow = document.getElementById(`review-item-${type}-${idx}`);
+                if (newRow) {
+                    newRow.classList.add('just-replaced');
+                    setTimeout(() => newRow.classList.remove('just-replaced'), 1500);
+                }
+
+            } catch (err) {
+                // Restore the button on failure
+                const b = document.getElementById(`replace-btn-${type}-${idx}`);
+                if (b) {
+                    b.textContent = 'Alt';
+                    b.classList.remove('replacing');
+                    b.disabled = false;
+                }
+                alert(`Could not get an alternative: ${err.message}`);
+            }
         }
 
         // Simple HTML escaper for review cards (untrusted AI content)

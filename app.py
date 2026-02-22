@@ -2409,6 +2409,252 @@ def finalize_guide():
         return jsonify({"error": "An unexpected error occurred. Please try again."}), 500
 
 
+@app.route('/replace', methods=['POST'])
+@require_auth
+def replace_item():
+    """
+    Replace a single item in the review screen with an alternative.
+
+    The endpoint reconstructs the original scout parameters from the saved Trip
+    record, runs a focused single-item scout that explicitly excludes all current
+    items by name, and returns the single best alternative.
+
+    Request body:
+        session_id    — str, the active review session
+        trip_id       — int|null, the DB trip record
+        type          — 'photos' | 'restaurants' | 'attractions'
+        index         — int, position of the item to replace (used for DB update)
+        day           — int, day number the item belongs to
+        meal_type     — str|null, 'breakfast'|'lunch'|'dinner' (restaurants only)
+        exclude_names — list[str], names of all current items to avoid
+
+    Returns:
+        { "item": { ...scout item dict... } }
+    """
+    try:
+        data       = request.get_json(force=True) or {}
+        session_id = str(data.get('session_id', '')).strip()
+        trip_id    = data.get('trip_id')
+        item_type  = str(data.get('type', '')).strip()
+        item_idx   = int(data.get('index', 0))
+        day        = int(data.get('day', 1))
+        meal_type  = data.get('meal_type') or None
+        exclude_names = [str(n) for n in (data.get('exclude_names') or []) if n]
+
+        if item_type not in ('photos', 'restaurants', 'attractions'):
+            return jsonify({'error': 'Invalid type'}), 400
+
+        # ── Resolve scout parameters from DB trip ──────────────────────────
+        # We need location, budget, distance, interests/cuisines/categories
+        # to run a coherent replacement scout.
+        location = budget = distance = None
+        interests = cuisines_str = categories = ''
+        duration  = 1
+
+        db_trip = None
+        if trip_id is not None:
+            try:
+                db_trip = db.session.get(Trip, int(trip_id))
+            except Exception:
+                pass
+        if db_trip is None and session_id:
+            db_trip = Trip.query.filter_by(session_id=session_id, is_deleted=False).first()
+
+        if db_trip:
+            location   = db_trip.location
+            duration   = db_trip.duration
+            budget     = db_trip.budget     or 'Moderate'
+            distance   = db_trip.distance   or 'Up to 30 minutes'
+            interests  = db_trip.photo_interests  or ''
+            cuisines_str = db_trip.cuisines or ''
+            categories = db_trip.attraction_cats  or ''
+        elif session_id and session_id in _session_store:
+            sess     = _session_store[session_id]
+            location = sess['location']
+            duration = sess['duration']
+            budget   = 'Moderate'
+            distance = 'Up to 30 minutes'
+        else:
+            return jsonify({'error': 'Session not found — please start over.'}), 404
+
+        if not location:
+            return jsonify({'error': 'Could not resolve trip location.'}), 400
+
+        # ── Load client profile if trip has one ────────────────────────────
+        client_profile = None
+        if db_trip and db_trip.client_id:
+            try:
+                from models import Client as _Client
+                db_client = db.session.get(_Client, db_trip.client_id)
+                if db_client and not db_client.is_deleted:
+                    client_profile = {k: v for k, v in {
+                        'home_city':            db_client.home_city            or '',
+                        'preferred_budget':     db_client.preferred_budget     or '',
+                        'travel_style':         db_client.travel_style         or '',
+                        'dietary_requirements': db_client.dietary_requirements or '',
+                        'notes':                db_client.notes                or '',
+                    }.items() if v}
+            except Exception as cp_exc:
+                logger.warning("Replace: could not load client profile: %s", cp_exc)
+
+        # ── Build an exclusion-aware prompt for a single replacement item ──
+        exclude_block = (
+            "IMPORTANT — Do NOT suggest any of the following (already in the guide):\n"
+            + "\n".join(f"  - {n}" for n in exclude_names)
+            + "\n"
+        ) if exclude_names else ""
+
+        day_context = f"Day {day} of a {duration}-day trip."
+
+        if item_type == 'photos':
+            prompt = f"""You are a photography location scout.
+Find ONE photography location in {location} that has NOT already been suggested.
+
+{exclude_block}
+Context: {day_context}
+Photography interests: {interests or 'general'}
+Budget: {budget} | Travel radius: {distance}
+
+Return EXACTLY one JSON object (no markdown, no other text):
+{{
+  "day": {day},
+  "time": "[best time range]",
+  "name": "[Exact location name]",
+  "address": "[Full street address]",
+  "coordinates": "[lat, lng or area]",
+  "travel_time": "N/A",
+  "subject": "[What to photograph and why it works — be specific]",
+  "setup": "[Where to stand, focal length, framing — actionable]",
+  "light": "[Light direction and optimal window — factual]",
+  "pro_tip": "[One honest, actionable tip]"
+}}"""
+
+        elif item_type == 'restaurants':
+            meal_hint = f"This should be a {meal_type} option." if meal_type else ""
+            diet_hint = ""
+            if client_profile and client_profile.get('dietary_requirements'):
+                diet_hint = f"HARD CONSTRAINT — dietary requirements: {client_profile['dietary_requirements']}. Never suggest anything that conflicts."
+
+            prompt = f"""You are a dining guide writer.
+Find ONE restaurant in {location} that has NOT already been suggested.
+
+{exclude_block}
+Context: {day_context} {meal_hint}
+Cuisine preferences: {cuisines_str or 'any local'}
+Budget: {budget} | Travel radius: {distance}
+{diet_hint}
+
+Return EXACTLY one JSON object (no markdown, no other text):
+{{
+  "day": {day},
+  "meal_type": "{meal_type or 'any'}",
+  "name": "[Restaurant name]",
+  "address": "[Full address]",
+  "location": "[Neighbourhood]",
+  "cuisine": "[Cuisine type]",
+  "travel_time": "N/A",
+  "description": "[2 sentences: what it is and what to order — name the dish]",
+  "price": "[$/$$/$$$/$$$$]",
+  "signature_dish": "[The one dish worth ordering]",
+  "ambiance": "[1 sentence: what you find when you walk in]",
+  "hours": "[Hours]",
+  "why_this_client": "[Why this suits the stated preferences]",
+  "insider_tip": "[One piece of practical advice]"
+}}"""
+
+        else:  # attractions
+            prompt = f"""You are a travel writer.
+Find ONE attraction in {location} that has NOT already been suggested.
+
+{exclude_block}
+Context: {day_context}
+Attraction interests: {categories or 'general sightseeing'}
+Budget: {budget} | Travel radius: {distance}
+
+Return EXACTLY one JSON object (no markdown, no other text):
+{{
+  "day": {day},
+  "time": "[time slot]",
+  "name": "[Attraction name]",
+  "address": "[Full address]",
+  "category": "[Type]",
+  "location": "[Neighbourhood]",
+  "travel_time": "N/A",
+  "description": "[2 sentences: what it is and why it is worth the visit]",
+  "admission": "[Free / price]",
+  "hours": "[Hours]",
+  "duration": "[Realistic visit length]",
+  "best_time": "[Specific time advice]",
+  "why_this_client": "[Why this suits the stated preferences]",
+  "highlight": "[Single best specific thing]",
+  "insider_tip": "[One practical tip most visitors miss]"
+}}"""
+
+        logger.info(
+            "Replace: type=%s idx=%d day=%d location=%s excluded=%d",
+            item_type, item_idx, day, location, len(exclude_names)
+        )
+
+        message = anthropic_client.messages.create(
+            model=SCOUT_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_text = message.content[0].text.strip()
+
+        # Parse the single returned JSON object
+        items = _parse_json_lines(raw_text, "Replace Scout")
+        if not items:
+            # Try wrapping as array in case model returns bare object
+            try:
+                items = [json.loads(raw_text)]
+            except Exception:
+                pass
+
+        if not items:
+            logger.warning("Replace Scout: failed to parse response for %s idx=%d", item_type, item_idx)
+            return jsonify({'error': 'Could not find an alternative. Try again or toggle this item off.'}), 422
+
+        new_item = items[0]
+
+        # ── Run Google Places verification on the replacement ──────────────
+        if PLACES_VERIFY_ENABLED:
+            verified, _ = verify_places_batch([new_item], 'name', 'address', location)
+            if verified:
+                new_item = verified[0]
+            # If Places returns nothing the item is still usable — just unverified
+
+        # ── Update the raw item in the DB trip record ──────────────────────
+        if db_trip:
+            try:
+                arr_field = {
+                    'photos':      'raw_photos',
+                    'restaurants': 'raw_restaurants',
+                    'attractions': 'raw_attractions',
+                }[item_type]
+                raw_arr = json.loads(getattr(db_trip, arr_field) or '[]')
+                if item_idx < len(raw_arr):
+                    raw_arr[item_idx] = new_item
+                    setattr(db_trip, arr_field, json.dumps(raw_arr))
+                    db_trip.updated_at = datetime.now(timezone.utc)
+                    db.session.commit()
+                    logger.info("Replace: DB trip %d updated — %s[%d] replaced", db_trip.id, item_type, item_idx)
+            except Exception as db_exc:
+                logger.error("Replace: DB update failed: %s", db_exc)
+
+        # ── Update the in-memory session store if still alive ──────────────
+        if session_id and session_id in _session_store:
+            sess_arr = _session_store[session_id].get(item_type, [])
+            if item_idx < len(sess_arr):
+                sess_arr[item_idx] = new_item
+
+        return jsonify({'item': new_item})
+
+    except Exception as e:
+        logger.error("Unhandled error in /replace: %s", e, exc_info=True)
+        return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
+
+
 if __name__ == '__main__':
     print("Trip Master API - Local Development")
     print("=" * 50)
