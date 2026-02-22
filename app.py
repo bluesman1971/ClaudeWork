@@ -416,26 +416,72 @@ def _parse_json_lines(text, scout_name):
     return results
 
 
-def call_photo_scout(location, duration, interests, distance, per_day=None):
-    """Call Claude Haiku to generate detailed photography locations with coordinates"""
+def call_photo_scout(location, duration, interests, distance, per_day=None,
+                     accommodation=None, client_profile=None):
+    """Call Claude to generate detailed photography locations with coordinates.
+
+    accommodation: optional hotel/address string used as the travel origin for
+                   distance and logistics advice.
+    client_profile: optional dict with keys home_city, preferred_budget,
+                    travel_style, notes — used to personalise recommendations.
+    """
     if per_day is None:
         per_day = PHOTOS_PER_DAY
-    key = _cache_key("photo", location, duration, interests, distance, per_day)
+    key = _cache_key("photo", location, duration, interests, distance, per_day,
+                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Photo Scout: cache hit for %s", location)
         return cached
 
     count = duration * per_day
+
+    # ── Build contextual blocks ──────────────────────────────────────────────
+    accommodation_block = (
+        f"- Accommodation / travel base: {accommodation}\n"
+        f"  Distance and logistics notes must be calculated from this address, not the city centre.\n"
+        if accommodation else
+        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+    )
+
+    profile = client_profile or {}
+    profile_lines = []
+    if profile.get('travel_style'):
+        profile_lines.append(f"  Travel style: {profile['travel_style']}")
+    if profile.get('preferred_budget'):
+        profile_lines.append(f"  Budget tier: {profile['preferred_budget']}")
+    if profile.get('home_city'):
+        profile_lines.append(f"  Home city: {profile['home_city']} — avoid suggesting things they can easily do at home")
+    if profile.get('notes'):
+        profile_lines.append(f"  Consultant notes: {profile['notes']}")
+
+    client_block = (
+        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        if profile_lines else
+        "Client profile: none provided — give broadly appealing recommendations.\n"
+    )
+
     prompt = f"""You are a photography location scout writing practical, no-nonsense shooting guides.
+Your recommendations are personalised to a specific client. Read their profile carefully and let it
+shape every choice — location difficulty, walk distance, time of day, and subject matter.
 
 Trip details:
-- Location: {location}
+- Destination: {location}
 - Duration: {duration} days
 - Photography interests: {interests}
-- Travel distance: {distance}
+- Max travel radius: {distance}
+{accommodation_block}
+{client_block}
+Generate {count} photography locations ({per_day} per day), spread across {duration} days.
 
-Generate {count} photography locations ({per_day} per day).
+PERSONALISATION RULES:
+- If a travel style or interest is given, weight recommendations to match it. An adventure traveller
+  gets rooftop access and early-morning spots; a relaxed traveller gets café terraces and parks.
+- If a budget tier is given, factor in any access costs (paid viewpoints, permits, guided tours).
+- If a home city is given, skip locations that are similar to what they have at home — surprise them.
+- If accommodation is given, state the approximate walking or transit time from that address for
+  each location. Use real street-level logic, not straight-line distance.
+- If consultant notes mention physical limitations, dietary needs, or other constraints, honour them.
 
 WRITING STYLE — follow this strictly:
 - Write like a knowledgeable friend giving honest advice, not a brochure.
@@ -445,7 +491,8 @@ WRITING STYLE — follow this strictly:
 - Practical over poetic. Timing, light direction, and where to stand are more useful than atmosphere words.
 - Acknowledge trade-offs honestly. If it's crowded, say so and say when it isn't.
 - Short sentences. Vary the rhythm. Cut every word that doesn't earn its place.
-- Forbidden words: stunning, breathtaking, magical, enchanting, iconic, world-class, vibrant, nestled, boasting, hidden gem, off the beaten path, a feast for the senses, evocative, timeless.
+- Forbidden words: stunning, breathtaking, magical, enchanting, iconic, world-class, vibrant,
+  nestled, boasting, hidden gem, off the beaten path, a feast for the senses, evocative, timeless.
 
 For EACH location output EXACTLY this JSON (no other text):
 {{
@@ -454,10 +501,11 @@ For EACH location output EXACTLY this JSON (no other text):
   "name": "[Exact location name]",
   "address": "[Full street address or neighbourhood]",
   "coordinates": "[latitude, longitude or area description]",
-  "subject": "[1-2 sentences: what you are pointing the camera at and why it works. Specific — name the building, the gap between structures, the reflection pool.]",
+  "travel_time": "[Approx travel time from accommodation, e.g., '8 min walk' or '12 min metro'. Write 'N/A' if no accommodation was given.]",
+  "subject": "[1-2 sentences: what you are pointing the camera at and why it works for this client's interests. Specific — name the building, the gap between structures, the reflection pool.]",
   "setup": "[2-3 sentences: where to stand, focal length, aperture if relevant, framing technique. Practical instructions a photographer can act on immediately.]",
   "light": "[2 sentences: light direction, best window, what changes after that window closes. Facts, not poetry.]",
-  "pro_tip": "[1-2 sentences: one honest, actionable tip — crowd timing, a less-obvious angle, a technical setting, a seasonal caveat.]"
+  "pro_tip": "[1-2 sentences: one honest, actionable tip — crowd timing, a less-obvious angle, a technical setting, a seasonal caveat. Personalise to the client if possible.]"
 }}
 
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
@@ -475,27 +523,77 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
     return locations
 
 
-def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None):
-    """Call Claude Haiku to generate restaurant recommendations"""
+def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
+                          accommodation=None, client_profile=None):
+    """Call Claude to generate restaurant recommendations.
+
+    accommodation: optional hotel/address string used as the travel origin for
+                   distance and logistics advice.
+    client_profile: optional dict with keys home_city, preferred_budget,
+                    travel_style, notes — used to personalise recommendations.
+    """
     if per_day is None:
         per_day = RESTAURANTS_PER_DAY
-    key = _cache_key("restaurant", location, duration, cuisines, budget, distance, per_day)
+    key = _cache_key("restaurant", location, duration, cuisines, budget, distance, per_day,
+                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Restaurant Scout: cache hit for %s", location)
         return cached
 
     count = duration * per_day
-    prompt = f"""You are a dining guide writer. Your job is clear, honest restaurant recommendations.
+
+    # ── Build contextual blocks ──────────────────────────────────────────────
+    accommodation_block = (
+        f"- Accommodation / travel base: {accommodation}\n"
+        f"  Distance notes must be calculated from this address, not the city centre.\n"
+        if accommodation else
+        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+    )
+
+    profile = client_profile or {}
+    profile_lines = []
+    if profile.get('travel_style'):
+        profile_lines.append(f"  Travel style: {profile['travel_style']}")
+    if profile.get('preferred_budget'):
+        profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — let this shape price tier selection")
+    if profile.get('home_city'):
+        profile_lines.append(f"  Home city: {profile['home_city']} — avoid chain restaurants or cuisine types they can get easily at home; prioritise genuinely local dishes and independent restaurants")
+    if profile.get('notes'):
+        profile_lines.append(f"  Consultant notes: {profile['notes']}")
+
+    client_block = (
+        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        if profile_lines else
+        "Client profile: none provided — give broadly appealing recommendations.\n"
+    )
+
+    prompt = f"""You are a dining guide writer producing clear, honest restaurant recommendations
+personalised to a specific client. Read their profile carefully — it should shape every pick.
 
 Trip details:
-- Location: {location}
+- Destination: {location}
 - Duration: {duration} days
-- Cuisine preferences: {cuisines}
-- Budget: {budget}
-- Travel distance: {distance}
+- Cuisine preferences stated by consultant: {cuisines}
+- Budget range: {budget}
+- Max travel radius: {distance}
+{accommodation_block}
+{client_block}
+Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
+covering breakfast, lunch, and dinner in a sensible rotation.
 
-Generate {count} restaurant recommendations ({per_day} per day).
+PERSONALISATION RULES:
+- Cuisine preferences are a starting point, not a ceiling. If the client profile reveals a travel
+  style or home city that suggests other good fits, include them and explain why.
+- Budget preference overrides the form budget if they conflict — the client's preference wins.
+- Home city: if given, skip chains or cuisine types they can get easily at home. Lean into
+  what is genuinely local to {location} and hard to replicate elsewhere.
+- Accommodation: if given, state approximate walking or transit time from that address to each
+  restaurant. Use realistic street-level logic.
+- Consultant notes: treat these as hard constraints. If they mention dietary restrictions,
+  allergies, or strong dislikes, honour them absolutely — never suggest something that conflicts.
+- Vary price tier across the day: don't make every meal fine dining or every meal street food
+  unless the profile specifically calls for that.
 
 WRITING STYLE — follow this strictly:
 - Write like a knowledgeable local, not a food critic trying to sound important.
@@ -504,7 +602,8 @@ WRITING STYLE — follow this strictly:
 - Ambiance: one plain sentence. What you actually find when you walk in.
 - Honest about trade-offs. Mention queues, cash-only, noise, or reservation difficulty if relevant.
 - Short sentences. No stacked adjectives. No filler.
-- Forbidden words: culinary journey, gastronomic, tantalise, exquisite, artisanal, world-class, iconic, hidden gem, vibrant, buzzing, a feast for the senses, unforgettable.
+- Forbidden words: culinary journey, gastronomic, tantalise, exquisite, artisanal, world-class,
+  iconic, hidden gem, vibrant, buzzing, a feast for the senses, unforgettable.
 
 For EACH restaurant output EXACTLY this JSON (no other text):
 {{
@@ -514,11 +613,13 @@ For EACH restaurant output EXACTLY this JSON (no other text):
   "address": "[Full address]",
   "location": "[Neighbourhood]",
   "cuisine": "[Cuisine type]",
+  "travel_time": "[Approx travel time from accommodation, e.g., '5 min walk' or '10 min taxi'. Write 'N/A' if no accommodation was given.]",
   "description": "[2 sentences: what the place is and what to order. Specific — name the dish.]",
   "price": "[$/$$/$$$/$$$$]",
   "signature_dish": "[The one dish most worth ordering]",
   "ambiance": "[1 sentence: what you find when you walk in — noise level, seating, clientele, formality.]",
   "hours": "[Hours of operation]",
+  "why_this_client": "[1 sentence: specifically why this pick suits this client's profile. If no profile was given, write why it suits the stated cuisine/budget preferences.]",
   "insider_tip": "[1-2 sentences: reservation advice, best seat, timing, or one thing most visitors miss.]"
 }}
 
@@ -539,36 +640,88 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
     return restaurants
 
 
-def call_attraction_scout(location, duration, categories, budget, distance, per_day=None):
-    """Call Claude Haiku to generate attractions with location details"""
+def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
+                          accommodation=None, client_profile=None):
+    """Call Claude to generate attractions with location details.
+
+    accommodation: optional hotel/address string used as the travel origin for
+                   distance and logistics advice.
+    client_profile: optional dict with keys home_city, preferred_budget,
+                    travel_style, notes — used to personalise recommendations.
+    """
     if per_day is None:
         per_day = ATTRACTIONS_PER_DAY
-    key = _cache_key("attraction", location, duration, categories, budget, distance, per_day)
+    key = _cache_key("attraction", location, duration, categories, budget, distance, per_day,
+                     accommodation, json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Attraction Scout: cache hit for %s", location)
         return cached
 
     count = duration * per_day
-    prompt = f"""You are a travel writer producing practical sightseeing recommendations.
+
+    # ── Build contextual blocks ──────────────────────────────────────────────
+    accommodation_block = (
+        f"- Accommodation / travel base: {accommodation}\n"
+        f"  Group each day's attractions geographically so the client isn't backtracking.\n"
+        f"  Distance and travel time must be calculated from this address, not the city centre.\n"
+        if accommodation else
+        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+    )
+
+    profile = client_profile or {}
+    profile_lines = []
+    if profile.get('travel_style'):
+        profile_lines.append(f"  Travel style: {profile['travel_style']}")
+    if profile.get('preferred_budget'):
+        profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — factor into admission and tour costs")
+    if profile.get('home_city'):
+        profile_lines.append(f"  Home city: {profile['home_city']} — skip attractions that are similar to what they have at home; favour experiences genuinely unique to {location}")
+    if profile.get('notes'):
+        profile_lines.append(f"  Consultant notes: {profile['notes']}")
+
+    client_block = (
+        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        if profile_lines else
+        "Client profile: none provided — give broadly appealing recommendations.\n"
+    )
+
+    prompt = f"""You are a travel writer producing practical sightseeing recommendations
+personalised to a specific client. Read their profile carefully — it should shape every choice.
 
 Trip details:
-- Location: {location}
+- Destination: {location}
 - Duration: {duration} days
 - Attraction interests: {categories}
 - Budget: {budget}
-- Travel distance: {distance}
+- Max travel radius: {distance}
+{accommodation_block}
+{client_block}
+Generate {count} attractions ({per_day} per day across {duration} days).
 
-Generate {count} attractions ({per_day} per day).
+PERSONALISATION RULES:
+- Category preferences are a starting point. Use the client profile to choose the specific
+  venues within each category that best match their style and background.
+- Home city: if given, skip attractions that parallel something they have at home. An art museum
+  is fine — unless they're from a city famous for its art museums, in which case find something
+  more distinctive to {location}.
+- Travel style: let it shape pace and depth. An adventurous traveller gets active or off-the-
+  beaten-path options; a cultural traveller gets deeper dives into history or art.
+- Budget preference: honour it in admission recommendations and any paid experiences you suggest.
+- If accommodation is given, plan each day's attractions so the client isn't constantly
+  backtracking. State approximate travel time from the accommodation for each stop.
+- Consultant notes: treat as hard constraints. Physical limitations, interests to avoid, or
+  specific requests must be respected absolutely.
 
 WRITING STYLE — follow this strictly:
 - Write like a well-travelled friend giving honest advice, not a tourist board.
 - Start with what the place is — a plain statement of fact.
 - Be specific: say what you actually see, hear, or do there.
 - Mention the realistic trade-off (crowds, queues, overhyped sections, anything worth knowing).
-- Best time and insider tip must be actionable. "Go early" is not enough — give a time.
+- Best time and insider tip must be actionable. "Go early" is not enough — give a specific time.
 - Short sentences. Vary the rhythm. No stacked adjectives.
-- Forbidden words: stunning, breathtaking, magical, iconic, world-class, unmissable, legendary, nestled, boasting, rich history, vibrant, hidden gem, off the beaten path.
+- Forbidden words: stunning, breathtaking, magical, iconic, world-class, unmissable, legendary,
+  nestled, boasting, rich history, vibrant, hidden gem, off the beaten path.
 
 For EACH attraction output EXACTLY this JSON (no other text):
 {{
@@ -578,11 +731,13 @@ For EACH attraction output EXACTLY this JSON (no other text):
   "address": "[Full address]",
   "category": "[Type: museum / market / viewpoint / park / etc.]",
   "location": "[Neighbourhood]",
-  "description": "[2 sentences: what it is and the one thing that makes it worth the visit. Honest — include any caveat.]",
+  "travel_time": "[Approx travel time from accommodation, e.g., '15 min metro' or '6 min walk'. Write 'N/A' if no accommodation was given.]",
+  "description": "[2 sentences: what it is and the one thing that makes it worth this client's time. Honest — include any caveat.]",
   "admission": "[Free / price range]",
   "hours": "[Opening hours]",
   "duration": "[Realistic visit length]",
   "best_time": "[Specific: e.g., 'Weekday mornings before 10am' or 'Late afternoon when tour groups leave']",
+  "why_this_client": "[1 sentence: specifically why this attraction suits this client's profile or interests.]",
   "highlight": "[The single best thing — be specific, not generic]",
   "insider_tip": "[1-2 sentences: one piece of practical advice most visitors don't know.]"
 }}
@@ -591,7 +746,7 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
     message = anthropic_client.messages.create(
         model=SCOUT_MODEL,
-        max_tokens=4000,
+        max_tokens=5000,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -1466,6 +1621,11 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                 badge, notice, confirmed_url = _verification_badge_html(photo)
                 maps_url = escape(confirmed_url or fallback_maps_url)
                 card_class = 'item-card'
+                travel_time = photo.get('travel_time', '')
+                travel_time_html = (
+                    f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
+                    f'<span class="meta-value">{_e(travel_time)}</span></div>'
+                ) if travel_time and travel_time.upper() != 'N/A' else ''
                 html += f"""
         <div class="{card_class}">
             <div class="item-card-head">
@@ -1485,6 +1645,7 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                         <span class="meta-label">Camera Setup</span>
                         <span class="meta-value">{_e(photo.get('setup'))}</span>
                     </div>
+                    {travel_time_html}
                 </div>
                 <div class="meta-cell">
                     <span class="meta-label">Light &amp; Conditions</span>
@@ -1537,6 +1698,17 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             card_class = 'item-card'
             meal  = _e(restaurant.get('meal_type'), '').title()
             price = _e(restaurant.get('price'), '')
+            r_travel_time  = restaurant.get('travel_time', '')
+            r_why_client   = restaurant.get('why_this_client', '')
+            r_travel_html  = (
+                f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
+                f'<span class="meta-value">{_e(r_travel_time)}</span></div>'
+            ) if r_travel_time and r_travel_time.upper() != 'N/A' else ''
+            r_why_html = (
+                f'<div class="tip-box" style="border-left-color:var(--primary)">'
+                f'<span class="meta-label">Why For This Client</span>'
+                f'{_e(r_why_client)}</div>'
+            ) if r_why_client else ''
             html += f"""
         <div class="{card_class}">
             <div class="item-card-head">
@@ -1569,7 +1741,9 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                         <span class="meta-label">Signature Dish</span>
                         <span class="meta-value">{_e(restaurant.get('signature_dish'))}</span>
                     </div>
+                    {r_travel_html}
                 </div>
+                {r_why_html}
                 <div class="tip-box">
                     <span class="meta-label">Insider Tip</span>
                     {_e(restaurant.get('insider_tip'))}
@@ -1632,6 +1806,17 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                 badge, notice, confirmed_url = _verification_badge_html(attraction)
                 maps_url = escape(confirmed_url or fallback_maps_url)
                 card_class = 'item-card'
+                a_travel_time = attraction.get('travel_time', '')
+                a_why_client  = attraction.get('why_this_client', '')
+                a_travel_html = (
+                    f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
+                    f'<span class="meta-value">{_e(a_travel_time)}</span></div>'
+                ) if a_travel_time and a_travel_time.upper() != 'N/A' else ''
+                a_why_html = (
+                    f'<div class="tip-box" style="border-left-color:var(--primary)">'
+                    f'<span class="meta-label">Why For This Client</span>'
+                    f'{_e(a_why_client)}</div>'
+                ) if a_why_client else ''
                 html += f"""
         <div class="{card_class}">
             <div class="item-card-head">
@@ -1664,7 +1849,9 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                         <span class="meta-label">Best Time to Visit</span>
                         <span class="meta-value">{_e(attraction.get('best_time'))}</span>
                     </div>
+                    {a_travel_html}
                 </div>
+                {a_why_html}
                 <div class="tip-box">
                     <span class="meta-label">Highlight &amp; Insider Tip</span>
                     <strong>{_e(attraction.get('highlight'))}</strong> &mdash; {_e(attraction.get('insider_tip'))}
@@ -1773,8 +1960,9 @@ def generate_trip_guide():
         if not (MIN_DURATION <= duration <= MAX_DURATION):
             return jsonify({"error": f"Duration must be between {MIN_DURATION} and {MAX_DURATION} days"}), 400
 
-        budget   = str(data['budget']).strip()
-        distance = str(data['distance']).strip()
+        budget        = str(data['budget']).strip()
+        distance      = str(data['distance']).strip()
+        accommodation = str(data.get('accommodation', '')).strip() or None
 
         # Section enable/disable flags — accept both JSON booleans and string "true"/"false"
         def _parse_bool(val, default=True):
@@ -1809,12 +1997,42 @@ def generate_trip_guide():
         cuisines        = str(data.get('cuisines',        '')).strip()
         attractions     = str(data.get('attractions',     '')).strip()
 
+        # ── Load client profile for personalised scouting ────────────────────
+        # If a client_id was supplied, pull the profile fields from the DB so
+        # the scouts can personalise recommendations to this specific traveller.
+        # Failure is non-fatal — scouts work fine without a profile.
+        client_profile = None
+        raw_client_id  = data.get('client_id')
+        if raw_client_id is not None:
+            try:
+                from models import Client as _Client
+                cid = int(raw_client_id)
+                db_client = db.session.get(_Client, cid)
+                if db_client and not db_client.is_deleted:
+                    client_profile = {
+                        'home_city':        db_client.home_city        or '',
+                        'preferred_budget': db_client.preferred_budget or '',
+                        'travel_style':     db_client.travel_style     or '',
+                        'notes':            db_client.notes            or '',
+                    }
+                    # Strip empty strings so prompts don't mention blank fields
+                    client_profile = {k: v for k, v in client_profile.items() if v}
+                    logger.info(
+                        "Client profile loaded for id=%d: %s",
+                        cid, list(client_profile.keys())
+                    )
+            except Exception as cp_exc:
+                logger.warning("Could not load client profile (id=%s): %s", raw_client_id, cp_exc)
+
         logger.info(
-            "Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) attractions=%s(%d/d)",
+            "Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) "
+            "attractions=%s(%d/d) | accommodation=%s | client_profile=%s",
             location, duration,
             'ON' if include_photos else 'OFF', photos_per_day,
             'ON' if include_dining else 'OFF', restaurants_per_day,
             'ON' if include_attractions else 'OFF', attractions_per_day,
+            'yes' if accommodation else 'no',
+            'yes' if client_profile else 'no',
         )
 
         # Build scout tasks — ONLY for sections the user explicitly enabled
@@ -1823,19 +2041,25 @@ def generate_trip_guide():
             scout_tasks['photos'] = (
                 call_photo_scout,
                 (location, duration, photo_interests, distance),
-                {'per_day': photos_per_day}
+                {'per_day': photos_per_day,
+                 'accommodation': accommodation,
+                 'client_profile': client_profile}
             )
         if include_dining:
             scout_tasks['restaurants'] = (
                 call_restaurant_scout,
                 (location, duration, cuisines, budget, distance),
-                {'per_day': restaurants_per_day}
+                {'per_day': restaurants_per_day,
+                 'accommodation': accommodation,
+                 'client_profile': client_profile}
             )
         if include_attractions:
             scout_tasks['attractions'] = (
                 call_attraction_scout,
                 (location, duration, attractions, budget, distance),
-                {'per_day': attractions_per_day}
+                {'per_day': attractions_per_day,
+                 'accommodation': accommodation,
+                 'client_profile': client_profile}
             )
         logger.info("Active scout tasks: %s", list(scout_tasks.keys()))
 
@@ -1945,8 +2169,8 @@ def generate_trip_guide():
 
         # ── Persist draft trip to database ──────────────────────────────────
         # client_id is optional — the frontend passes it when a client is selected.
+        # raw_client_id was already parsed above for profile loading; reuse it.
         trip_client_id = None
-        raw_client_id  = data.get('client_id')
         if raw_client_id is not None:
             try:
                 trip_client_id = int(raw_client_id)

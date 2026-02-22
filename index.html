@@ -1458,6 +1458,13 @@
                 </div>
             </div>
 
+            <div class="field-row">
+                <div class="field" style="grid-column: 1 / -1;">
+                    <label for="accommodation">Accommodation Address <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — improves distance &amp; logistics advice)</span></label>
+                    <input type="text" id="accommodation" placeholder="e.g., Hotel Arts, Carrer de la Marina 19-21, Barcelona">
+                </div>
+            </div>
+
             <!-- Photography -->
             <div class="cat-section" id="section-photos">
                 <div class="cat-header">
@@ -2304,6 +2311,7 @@
             // Build payload — only send enabled sections
             const payload = {
                 location, duration, budget, distance,
+                accommodation: document.getElementById('accommodation').value.trim(),
                 include_photos:      sectionEnabled.photos,
                 include_dining:      sectionEnabled.dining,
                 include_attractions: sectionEnabled.attractions,
@@ -2369,6 +2377,7 @@
 
         function resetForm() {
             document.getElementById('tripForm').reset();
+            document.getElementById('accommodation').value = '';
             // Reset other text inputs
             ['photo_other_text','cuisine_other_text','attr_other_text'].forEach(id => {
                 document.getElementById(id).value = '';
