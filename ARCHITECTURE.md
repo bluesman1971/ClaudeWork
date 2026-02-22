@@ -126,6 +126,19 @@ The core feature is the `/generate` endpoint in `app.py`. When a consultant clic
 8. **Session store** — verified results are stored in a server-side in-memory dict (`_session_store`) keyed by a UUID, with a 1-hour TTL. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker
 9. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs), and returns it to the browser
 
+### Travel time estimates
+If the consultant enters an accommodation address on the generate form, the app:
+1. Geocodes the address once via the Places API (same key as venue verification — no additional API needed)
+2. After verifying each venue, computes the straight-line (haversine) distance from the accommodation coordinates to the venue's `_lat`/`_lng`
+3. Formats it as a human-readable estimate, e.g. `~650 m · ~8 min walk` or `~2.1 km · ~26 min walk`
+4. Writes this into the `travel_time` field, overwriting the Claude-generated text
+
+Walking speed used: **80 m/min** — a comfortable urban pace that accounts for pavements and crossings. Straight-line distance is always shorter than the actual walking route, so the estimate is a lower bound. All values are labelled `~` to signal they are approximate.
+
+**Fallback chain:** If Places verification is disabled (no API key), or if accommodation geocoding fails, or if an item has no `_lat`/`_lng` (unverified), the Claude-generated text estimate is preserved unchanged. The feature degrades silently — no errors are surfaced to the user.
+
+The accommodation string is also stored on the `Trip` DB record so `/replace` can geocode it for replacement items.
+
 ### In-memory caching
 Scout results are cached in `_cache` (a plain dict) for 1 hour keyed on the combination of location, duration, preferences, accommodation, pre_planned, and client profile. Empty results are never cached so a failed parse always retries fresh on the next request.
 
@@ -218,6 +231,7 @@ Saved travel guide records. Stores both the raw AI output and the final HTML.
 | photo_interests | String(500) | Photography style preferences |
 | cuisines | String(500) | Cuisine preferences for restaurant scout |
 | attraction_cats | String(500) | Attraction category preferences |
+| accommodation | String(500) | Hotel/address used as travel origin for distance estimates |
 | raw_photos | Text (JSON) | Full verified item dicts from photo scout |
 | raw_restaurants | Text (JSON) | Full verified item dicts from restaurant scout |
 | raw_attractions | Text (JSON) | Full verified item dicts from attraction scout |
@@ -239,6 +253,14 @@ For SQLite (local dev only), WAL (Write-Ahead Logging) mode is enabled on every 
 To handle this, `app.py` runs a list of `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements immediately after `db.create_all()`. This is safe to re-run on every startup — PostgreSQL's `IF NOT EXISTS` clause is a no-op if the column already exists. SQLite doesn't support `IF NOT EXISTS` on `ADD COLUMN`, so the migration block catches and logs the exception without crashing.
 
 **When adding a new column to an existing model:** add the column to `models.py` as usual, then add a corresponding `ALTER TABLE <table> ADD COLUMN IF NOT EXISTS <col> <type>` entry to the `_migrations` list in `app.py`. The column will be created on the next deploy.
+
+Current migrations (as of this version):
+```python
+_migrations = [
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT",
+    "ALTER TABLE trips   ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)",
+]
+```
 
 ---
 
