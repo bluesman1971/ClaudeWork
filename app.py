@@ -135,6 +135,23 @@ with app.app_context():
 
     db.create_all()
 
+    # ── Column migrations for existing databases ──────────────────────────
+    # db.create_all() adds new *tables* but not new *columns* to existing ones.
+    # Run raw ALTER TABLE ... ADD COLUMN IF NOT EXISTS for each column added
+    # after the initial schema was deployed.  Safe to re-run on every startup.
+    _migrations = [
+        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT",
+    ]
+    try:
+        with db.engine.connect() as _conn:
+            for _sql in _migrations:
+                _conn.execute(db.text(_sql))
+            _conn.commit()
+    except Exception as _mig_exc:
+        # SQLite doesn't support IF NOT EXISTS on ADD COLUMN — fall back to
+        # checking the column exists first.
+        logger.warning("Column migration skipped (likely SQLite): %s", _mig_exc)
+
 # CORS origins — comma-separated list read from the environment variable so
 # production deployments don't need code changes.  Falls back to localhost for
 # local development.  Set CORS_ORIGINS in .env or the server environment, e.g.:
@@ -2602,10 +2619,17 @@ Return EXACTLY one JSON object (no markdown, no other text):
         )
         raw_text = message.content[0].text.strip()
 
+        # Strip markdown code fences if the model wrapped the output (e.g. ```json ... ```)
+        if raw_text.startswith('```'):
+            raw_text = raw_text.split('```', 2)[-1]          # drop opening fence
+            raw_text = raw_text.rsplit('```', 1)[0].strip()   # drop closing fence
+            if raw_text.startswith('json'):
+                raw_text = raw_text[4:].strip()
+
         # Parse the single returned JSON object
         items = _parse_json_lines(raw_text, "Replace Scout")
         if not items:
-            # Try wrapping as array in case model returns bare object
+            # Try bare json.loads for pretty-printed (multi-line) objects
             try:
                 items = [json.loads(raw_text)]
             except Exception:
