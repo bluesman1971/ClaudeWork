@@ -5,6 +5,7 @@ Orchestrates Photo Scout, Restaurant Scout, and Attraction Scout via Anthropic A
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -208,6 +209,23 @@ MAX_EXCLUDE_NAME_LEN  = 100   # each name in exclude_names
 MAX_EXCLUDE_LIST_LEN  = 50    # total items in exclude_names list
 MIN_DURATION = 1
 MAX_DURATION = 14
+
+
+def _sanitise_line(value, max_len: int) -> str | None:
+    """
+    Sanitise a single-line text field before prompt interpolation.
+    - Collapses all whitespace (including \\n, \\r, \\t) to a single space
+    - Strips leading/trailing whitespace
+    - Truncates to max_len characters
+    - Returns None if the result is empty
+
+    Use this for every field that appears on a single logical line in a
+    prompt (location, accommodation, dietary_requirements, etc.).
+    Multi-line fields (pre_planned, notes) should only be stripped, not
+    collapsed, since embedded newlines are intentional there.
+    """
+    s = re.sub(r'\s+', ' ', str(value)).strip()[:max_len]
+    return s or None
 
 # Google Places API
 GOOGLE_PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY', '')
@@ -2100,8 +2118,8 @@ def generate_trip_guide():
         if not all(field in data for field in required_fields):
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Validate and sanitize location
-        location = str(data['location']).strip()
+        # Validate and sanitize location (single-line — collapse whitespace)
+        location = _sanitise_line(data['location'], MAX_LOCATION_LENGTH)
         if not location:
             return jsonify({"error": "Location cannot be empty"}), 400
         if len(location) > MAX_LOCATION_LENGTH:
@@ -2115,14 +2133,12 @@ def generate_trip_guide():
         if not (MIN_DURATION <= duration <= MAX_DURATION):
             return jsonify({"error": f"Duration must be between {MIN_DURATION} and {MAX_DURATION} days"}), 400
 
-        budget        = str(data['budget']).strip()[:MAX_FIELD_SHORT]
-        distance      = str(data['distance']).strip()[:MAX_FIELD_SHORT]
-        accommodation = (str(data.get('accommodation', '')).strip() or None)
-        if accommodation:
-            accommodation = accommodation[:MAX_FIELD_SHORT]
-        pre_planned   = (str(data.get('pre_planned', '')).strip() or None)
-        if pre_planned:
-            pre_planned = pre_planned[:MAX_FIELD_MEDIUM]
+        # Single-line fields: collapse whitespace + truncate
+        budget        = _sanitise_line(data['budget'],                    MAX_FIELD_SHORT) or 'Moderate'
+        distance      = _sanitise_line(data['distance'],                  MAX_FIELD_SHORT) or 'Up to 30 minutes'
+        accommodation = _sanitise_line(data.get('accommodation', '') or '', MAX_FIELD_SHORT)
+        # pre_planned is multi-line: strip ends only, preserve internal newlines
+        pre_planned   = str(data.get('pre_planned', '') or '').strip()[:MAX_FIELD_MEDIUM] or None
 
         # Section enable/disable flags — accept both JSON booleans and string "true"/"false"
         def _parse_bool(val, default=True):
@@ -2577,7 +2593,11 @@ def replace_item():
         day        = int(data.get('day', 1))
         meal_type  = data.get('meal_type') or None
         raw_excludes  = (data.get('exclude_names') or [])
-        exclude_names = [str(n)[:MAX_EXCLUDE_NAME_LEN] for n in raw_excludes if n][:MAX_EXCLUDE_LIST_LEN]
+        exclude_names = [
+            s for s in (
+                _sanitise_line(n, MAX_EXCLUDE_NAME_LEN) for n in raw_excludes if n
+            ) if s
+        ][:MAX_EXCLUDE_LIST_LEN]
 
         if item_type not in ('photos', 'restaurants', 'attractions'):
             return jsonify({'error': 'Invalid type'}), 400

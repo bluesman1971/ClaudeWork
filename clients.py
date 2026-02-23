@@ -24,9 +24,25 @@ _MAX_SHORT  = 150   # single-line profile fields
 _MAX_MEDIUM = 500   # multi-line fields (notes)
 _MAX_NAME   = 200   # client name
 
+import re as _re
+
 
 def _clamp(value, max_len: int) -> str | None:
-    """Strip, truncate to max_len, return None if empty."""
+    """
+    Sanitise a single-line field: collapse all whitespace (including newlines
+    and tabs) to a single space, strip ends, truncate to max_len.
+    Returns None if the result is empty.
+    """
+    s = _re.sub(r'\s+', ' ', str(value)).strip()[:max_len]
+    return s or None
+
+
+def _clamp_multiline(value, max_len: int) -> str | None:
+    """
+    Sanitise a multi-line field: strip leading/trailing whitespace only
+    (internal newlines are legitimate). Truncate to max_len.
+    Returns None if the result is empty.
+    """
     s = str(value).strip()[:max_len]
     return s or None
 
@@ -96,7 +112,7 @@ def create_client():
         preferred_budget     = _clamp(data.get('preferred_budget',    ''), _MAX_SHORT),
         travel_style         = _clamp(data.get('travel_style',        ''), _MAX_SHORT),
         dietary_requirements = _clamp(data.get('dietary_requirements',''), _MAX_SHORT),
-        notes                = _clamp(data.get('notes',               ''), _MAX_MEDIUM),
+        notes                = _clamp_multiline(data.get('notes',      ''), _MAX_MEDIUM),
         tags                 = _clamp(data.get('tags',                ''), _MAX_SHORT),
         created_by_id        = g.current_user.id,
     )
@@ -138,12 +154,16 @@ def update_client(client_id):
         'preferred_budget':     _MAX_SHORT,
         'travel_style':         _MAX_SHORT,
         'dietary_requirements': _MAX_SHORT,
-        'notes':                _MAX_MEDIUM,
+        'notes':                None,        # multi-line — handled separately below
         'tags':                 _MAX_SHORT,
     }
     for field, max_len in _field_caps.items():
         if field in data:
-            setattr(client, field, _clamp(data[field], max_len))
+            if max_len is None:
+                # multi-line field — preserve internal newlines
+                setattr(client, field, _clamp_multiline(data[field], _MAX_MEDIUM))
+            else:
+                setattr(client, field, _clamp(data[field], max_len))
 
     # Protect required field
     if not client.name:
