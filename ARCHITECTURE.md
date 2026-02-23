@@ -277,7 +277,20 @@ _migrations = [
 | HTTP security headers | `app.py` | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`, HSTS (production only) |
 | SSRF guard | `app.py` | `_fetch_static_map_as_base64()` only fetches from `https://maps.googleapis.com/` — blocks server-side request forgery |
 | Generic error messages in API | `app.py` | `/generate` and `/finalize` return generic errors on failure — never leaks internal exception details to the browser |
+| Prompt injection defence — system/user role separation | `app.py` | All Anthropic API calls use the `system` parameter for role definitions, output format schemas, and writing rules. User-supplied fields (location, accommodation, pre_planned, dietary_requirements, notes, exclude_names, etc.) are placed only in the `messages` user turn. Claude treats system content as more authoritative than user-message content, making it significantly harder for injected text in user fields to override the real instructions. |
 | `.gitignore` | repo root | Excludes `.env`, `*.db`, `venv/`, `__pycache__/`, `.DS_Store`, backup files |
+
+### Prompt injection — current posture and remaining work
+
+The system/user role separation is the primary defence. Additional hardening steps that would be required before any public-facing exposure:
+
+| Risk | Status | What's needed |
+|---|---|---|
+| System/user role separation | ✅ Implemented | Done — all scouts and `/replace` use `system` parameter |
+| Length caps on free-text fields | ✅ Implemented | Constants `MAX_FIELD_SHORT` (150), `MAX_FIELD_MEDIUM` (500), `MAX_EXCLUDE_NAME_LEN` (100), `MAX_EXCLUDE_LIST_LEN` (50) in `app.py`. Applied to `accommodation`, `pre_planned`, `budget`, `distance` in `/generate`; each `exclude_names` entry and the list itself in `/replace`; all string fields in `POST /clients` and `PUT /clients/<id>`. |
+| Newline stripping on single-line fields | ❌ Not implemented | Newlines in fields like `dietary_requirements` or `home_city` can break prompt structure. Collapse whitespace to a single space for single-line fields before interpolation |
+| `exclude_names` server-side validation | ❌ Not implemented | `/replace` trusts the client-supplied exclusion list. Could instead rebuild it from the DB `Trip` record's `raw_*` arrays, removing the injection surface entirely |
+| Per-user rate limiting on `/generate` | ❌ Not implemented | Auth rate limiting only covers `/auth/login`. An authenticated user can hammer `/generate` unlimited times |
 
 ---
 

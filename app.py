@@ -201,7 +201,11 @@ SCOUT_MODEL_LABEL  = os.getenv('SCOUT_MODEL_LABEL', 'Claude Haiku 4.5')
 PHOTOS_PER_DAY = 3
 RESTAURANTS_PER_DAY = 3
 ATTRACTIONS_PER_DAY = 4
-MAX_LOCATION_LENGTH = 100
+MAX_LOCATION_LENGTH   = 100
+MAX_FIELD_SHORT       = 150   # single-line fields: accommodation, travel_style, home_city, dietary_requirements
+MAX_FIELD_MEDIUM      = 500   # multi-line fields: pre_planned, notes
+MAX_EXCLUDE_NAME_LEN  = 100   # each name in exclude_names
+MAX_EXCLUDE_LIST_LEN  = 50    # total items in exclude_names list
 MIN_DURATION = 1
 MAX_DURATION = 14
 
@@ -2111,10 +2115,14 @@ def generate_trip_guide():
         if not (MIN_DURATION <= duration <= MAX_DURATION):
             return jsonify({"error": f"Duration must be between {MIN_DURATION} and {MAX_DURATION} days"}), 400
 
-        budget        = str(data['budget']).strip()
-        distance      = str(data['distance']).strip()
-        accommodation = str(data.get('accommodation', '')).strip() or None
-        pre_planned   = str(data.get('pre_planned',   '')).strip() or None
+        budget        = str(data['budget']).strip()[:MAX_FIELD_SHORT]
+        distance      = str(data['distance']).strip()[:MAX_FIELD_SHORT]
+        accommodation = (str(data.get('accommodation', '')).strip() or None)
+        if accommodation:
+            accommodation = accommodation[:MAX_FIELD_SHORT]
+        pre_planned   = (str(data.get('pre_planned', '')).strip() or None)
+        if pre_planned:
+            pre_planned = pre_planned[:MAX_FIELD_MEDIUM]
 
         # Section enable/disable flags — accept both JSON booleans and string "true"/"false"
         def _parse_bool(val, default=True):
@@ -2568,7 +2576,8 @@ def replace_item():
         item_idx   = int(data.get('index', 0))
         day        = int(data.get('day', 1))
         meal_type  = data.get('meal_type') or None
-        exclude_names = [str(n) for n in (data.get('exclude_names') or []) if n]
+        raw_excludes  = (data.get('exclude_names') or [])
+        exclude_names = [str(n)[:MAX_EXCLUDE_NAME_LEN] for n in raw_excludes if n][:MAX_EXCLUDE_LIST_LEN]
 
         if item_type not in ('photos', 'restaurants', 'attractions'):
             return jsonify({'error': 'Invalid type'}), 400

@@ -19,6 +19,17 @@ from flask import Blueprint, request, jsonify, g
 from models import db, Client, StaffUser
 from auth import require_auth
 
+# Field length caps — keep in sync with MAX_FIELD_* constants in app.py
+_MAX_SHORT  = 150   # single-line profile fields
+_MAX_MEDIUM = 500   # multi-line fields (notes)
+_MAX_NAME   = 200   # client name
+
+
+def _clamp(value, max_len: int) -> str | None:
+    """Strip, truncate to max_len, return None if empty."""
+    s = str(value).strip()[:max_len]
+    return s or None
+
 logger = logging.getLogger(__name__)
 
 clients_bp = Blueprint('clients', __name__, url_prefix='/clients')
@@ -71,23 +82,23 @@ def create_client():
     """POST /clients — create a new client record."""
     data = request.get_json(force=True, silent=True) or {}
 
-    name = str(data.get('name', '')).strip()
+    name = _clamp(data.get('name', ''), _MAX_NAME)
     if not name:
         return jsonify({'error': 'Client name is required'}), 400
 
     client = Client(
-        reference_code   = _next_reference_code(),
-        name             = name,
-        email            = str(data.get('email',            '')).strip() or None,
-        phone            = str(data.get('phone',            '')).strip() or None,
-        company          = str(data.get('company',          '')).strip() or None,
-        home_city             = str(data.get('home_city',             '')).strip() or None,
-        preferred_budget      = str(data.get('preferred_budget',      '')).strip() or None,
-        travel_style          = str(data.get('travel_style',          '')).strip() or None,
-        dietary_requirements  = str(data.get('dietary_requirements',  '')).strip() or None,
-        notes                 = str(data.get('notes',                 '')).strip() or None,
-        tags             = str(data.get('tags',             '')).strip() or None,
-        created_by_id    = g.current_user.id,
+        reference_code       = _next_reference_code(),
+        name                 = name,
+        email                = _clamp(data.get('email',               ''), _MAX_SHORT),
+        phone                = _clamp(data.get('phone',               ''), _MAX_SHORT),
+        company              = _clamp(data.get('company',             ''), _MAX_SHORT),
+        home_city            = _clamp(data.get('home_city',           ''), _MAX_SHORT),
+        preferred_budget     = _clamp(data.get('preferred_budget',    ''), _MAX_SHORT),
+        travel_style         = _clamp(data.get('travel_style',        ''), _MAX_SHORT),
+        dietary_requirements = _clamp(data.get('dietary_requirements',''), _MAX_SHORT),
+        notes                = _clamp(data.get('notes',               ''), _MAX_MEDIUM),
+        tags                 = _clamp(data.get('tags',                ''), _MAX_SHORT),
+        created_by_id        = g.current_user.id,
     )
     db.session.add(client)
     db.session.commit()
@@ -116,12 +127,23 @@ def update_client(client_id):
 
     data = request.get_json(force=True, silent=True) or {}
 
-    # Updateable fields — only overwrite if the key is present in the payload
-    str_fields = ['name', 'email', 'phone', 'company', 'home_city',
-                  'preferred_budget', 'travel_style', 'dietary_requirements', 'notes', 'tags']
-    for field in str_fields:
+    # Updateable fields with per-field length caps
+    # Only overwrite if the key is present in the payload
+    _field_caps = {
+        'name':                 _MAX_NAME,
+        'email':                _MAX_SHORT,
+        'phone':                _MAX_SHORT,
+        'company':              _MAX_SHORT,
+        'home_city':            _MAX_SHORT,
+        'preferred_budget':     _MAX_SHORT,
+        'travel_style':         _MAX_SHORT,
+        'dietary_requirements': _MAX_SHORT,
+        'notes':                _MAX_MEDIUM,
+        'tags':                 _MAX_SHORT,
+    }
+    for field, max_len in _field_caps.items():
         if field in data:
-            setattr(client, field, str(data[field]).strip() or None)
+            setattr(client, field, _clamp(data[field], max_len))
 
     # Protect required field
     if not client.name:
