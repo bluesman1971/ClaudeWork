@@ -568,19 +568,9 @@ def call_photo_scout(location, duration, interests, distance, per_day=None,
         "Client profile: none provided — give broadly appealing recommendations.\n"
     )
 
-    prompt = f"""You are a photography location scout writing practical, no-nonsense shooting guides.
+    system_prompt = f"""You are a photography location scout writing practical, no-nonsense shooting guides.
 Your recommendations are personalised to a specific client. Read their profile carefully and let it
 shape every choice — location difficulty, walk distance, time of day, and subject matter.
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Photography interests: {interests}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} photography locations ({per_day} per day), spread across {duration} days.
 
 PERSONALISATION RULES:
 - If a travel style or interest is given, weight recommendations to match it. An adventure traveller
@@ -604,7 +594,7 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: stunning, breathtaking, magical, enchanting, iconic, world-class, vibrant,
   nestled, boasting, hidden gem, off the beaten path, a feast for the senses, evocative, timeless.
 
-For EACH location output EXACTLY this JSON (no other text):
+OUTPUT FORMAT — return EXACTLY this JSON schema for each location, one object per line, no markdown:
 {{
   "day": [day number],
   "time": "[time range, e.g., 6:30-7:30am]",
@@ -616,14 +606,25 @@ For EACH location output EXACTLY this JSON (no other text):
   "setup": "[2-3 sentences: where to stand, focal length, aperture if relevant, framing technique. Practical instructions a photographer can act on immediately.]",
   "light": "[2 sentences: light direction, best window, what changes after that window closes. Facts, not poetry.]",
   "pro_tip": "[1-2 sentences: one honest, actionable tip — crowd timing, a less-obvious angle, a technical setting, a seasonal caveat. Personalise to the client if possible.]"
-}}
+}}"""
 
+    user_prompt = f"""Generate {count} photography locations ({per_day} per day), spread across {duration} days.
+
+Trip details:
+- Destination: {location}
+- Duration: {duration} days
+- Photography interests: {interests}
+- Max travel radius: {distance}
+{accommodation_block}
+{pre_planned_block}
+{client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
     message = anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=6000,
-        messages=[{"role": "user", "content": prompt}]
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
 
     locations = _parse_json_lines(message.content[0].text, "Photo Scout")
@@ -690,27 +691,15 @@ def call_restaurant_scout(location, duration, cuisines, budget, distance, per_da
         "Client profile: none provided — give broadly appealing recommendations.\n"
     )
 
-    prompt = f"""You are a dining guide writer producing clear, honest restaurant recommendations
+    system_prompt = f"""You are a dining guide writer producing clear, honest restaurant recommendations
 personalised to a specific client. Read their profile carefully — it should shape every pick.
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Cuisine preferences stated by consultant: {cuisines}
-- Budget range: {budget}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
-covering breakfast, lunch, and dinner in a sensible rotation.
 
 PERSONALISATION RULES:
 - Cuisine preferences are a starting point, not a ceiling. If the client profile reveals a travel
   style or home city that suggests other good fits, include them and explain why.
 - Budget preference overrides the form budget if they conflict — the client's preference wins.
 - Home city: if given, skip chains or cuisine types they can get easily at home. Lean into
-  what is genuinely local to {location} and hard to replicate elsewhere.
+  what is genuinely local to the destination and hard to replicate elsewhere.
 - Accommodation: if given, state approximate walking or transit time from that address to each
   restaurant. Use realistic street-level logic.
 - DIETARY REQUIREMENTS are absolute. If given, every restaurant and every suggested dish must
@@ -731,7 +720,7 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: culinary journey, gastronomic, tantalise, exquisite, artisanal, world-class,
   iconic, hidden gem, vibrant, buzzing, a feast for the senses, unforgettable.
 
-For EACH restaurant output EXACTLY this JSON (no other text):
+OUTPUT FORMAT — return EXACTLY this JSON schema for each restaurant, one object per line, no markdown:
 {{
   "day": [day number],
   "meal_type": "[breakfast/lunch/dinner]",
@@ -749,14 +738,27 @@ For EACH restaurant output EXACTLY this JSON (no other text):
   "insider_tip": "[1-2 sentences: reservation advice, best seat, timing, or one thing most visitors miss.]"
 }}
 
-Price scale: $ = budget/street food, $$ = moderate, $$$ = moderately expensive, $$$$ = fine dining / splurge.
+Price scale: $ = budget/street food, $$ = moderate, $$$ = moderately expensive, $$$$ = fine dining / splurge."""
 
+    user_prompt = f"""Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
+covering breakfast, lunch, and dinner in a sensible rotation.
+
+Trip details:
+- Destination: {location}
+- Duration: {duration} days
+- Cuisine preferences stated by consultant: {cuisines}
+- Budget range: {budget}
+- Max travel radius: {distance}
+{accommodation_block}
+{pre_planned_block}
+{client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
     message = anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
-        messages=[{"role": "user", "content": prompt}]
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
 
     restaurants = _parse_json_lines(message.content[0].text, "Restaurant Scout")
@@ -824,26 +826,15 @@ def call_attraction_scout(location, duration, categories, budget, distance, per_
         "Client profile: none provided — give broadly appealing recommendations.\n"
     )
 
-    prompt = f"""You are a travel writer producing practical sightseeing recommendations
+    system_prompt = """You are a travel writer producing practical sightseeing recommendations
 personalised to a specific client. Read their profile carefully — it should shape every choice.
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Attraction interests: {categories}
-- Budget: {budget}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} attractions ({per_day} per day across {duration} days).
 
 PERSONALISATION RULES:
 - Category preferences are a starting point. Use the client profile to choose the specific
   venues within each category that best match their style and background.
 - Home city: if given, skip attractions that parallel something they have at home. An art museum
   is fine — unless they're from a city famous for its art museums, in which case find something
-  more distinctive to {location}.
+  more distinctive to the destination.
 - Travel style: let it shape pace and depth. An adventurous traveller gets active or off-the-
   beaten-path options; a cultural traveller gets deeper dives into history or art.
 - Budget preference: honour it in admission recommendations and any paid experiences you suggest.
@@ -865,8 +856,8 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: stunning, breathtaking, magical, iconic, world-class, unmissable, legendary,
   nestled, boasting, rich history, vibrant, hidden gem, off the beaten path.
 
-For EACH attraction output EXACTLY this JSON (no other text):
-{{
+OUTPUT FORMAT — return EXACTLY this JSON schema for each attraction, one object per line, no markdown:
+{
   "day": [day number],
   "time": "[time slot, e.g., 9:00-11:00am]",
   "name": "[Attraction name]",
@@ -882,14 +873,26 @@ For EACH attraction output EXACTLY this JSON (no other text):
   "why_this_client": "[1 sentence: specifically why this attraction suits this client's profile or interests.]",
   "highlight": "[The single best thing — be specific, not generic]",
   "insider_tip": "[1-2 sentences: one piece of practical advice most visitors don't know.]"
-}}
+}"""
 
+    user_prompt = f"""Generate {count} attractions ({per_day} per day across {duration} days).
+
+Trip details:
+- Destination: {location}
+- Duration: {duration} days
+- Attraction interests: {categories}
+- Budget: {budget}
+- Max travel radius: {distance}
+{accommodation_block}
+{pre_planned_block}
+{client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
     message = anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
-        messages=[{"role": "user", "content": prompt}]
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
 
     attractions = _parse_json_lines(message.content[0].text, "Attraction Scout")
@@ -2633,17 +2636,11 @@ def replace_item():
         day_context = f"Day {day} of a {duration}-day trip."
 
         if item_type == 'photos':
-            prompt = f"""You are a photography location scout.
-Find ONE photography location in {location} that has NOT already been suggested.
-
-{exclude_block}
-Context: {day_context}
-Photography interests: {interests or 'general'}
-Budget: {budget} | Travel radius: {distance}
-
-Return EXACTLY one JSON object (no markdown, no other text):
-{{
-  "day": {day},
+            system_prompt = """You are a photography location scout.
+Find ONE real, currently accessible photography location that has NOT already been suggested.
+Return EXACTLY one JSON object, no markdown, no other text:
+{
+  "day": [day number],
   "time": "[best time range]",
   "name": "[Exact location name]",
   "address": "[Full street address]",
@@ -2653,27 +2650,27 @@ Return EXACTLY one JSON object (no markdown, no other text):
   "setup": "[Where to stand, focal length, framing — actionable]",
   "light": "[Light direction and optimal window — factual]",
   "pro_tip": "[One honest, actionable tip]"
-}}"""
+}"""
+            user_prompt = f"""Find one photography location in {location}.
+
+{exclude_block}
+Context: {day_context}
+Photography interests: {interests or 'general'}
+Budget: {budget} | Travel radius: {distance}"""
 
         elif item_type == 'restaurants':
             meal_hint = f"This should be a {meal_type} option." if meal_type else ""
             diet_hint = ""
             if client_profile and client_profile.get('dietary_requirements'):
-                diet_hint = f"HARD CONSTRAINT — dietary requirements: {client_profile['dietary_requirements']}. Never suggest anything that conflicts."
+                diet_hint = f"DIETARY HARD CONSTRAINT — never suggest anything incompatible with: {client_profile['dietary_requirements']}"
 
-            prompt = f"""You are a dining guide writer.
-Find ONE restaurant in {location} that has NOT already been suggested.
-
-{exclude_block}
-Context: {day_context} {meal_hint}
-Cuisine preferences: {cuisines_str or 'any local'}
-Budget: {budget} | Travel radius: {distance}
+            system_prompt = f"""You are a dining guide writer.
+Find ONE real restaurant that has NOT already been suggested.
 {diet_hint}
-
-Return EXACTLY one JSON object (no markdown, no other text):
+Return EXACTLY one JSON object, no markdown, no other text:
 {{
-  "day": {day},
-  "meal_type": "{meal_type or 'any'}",
+  "day": [day number],
+  "meal_type": "[breakfast/lunch/dinner]",
   "name": "[Restaurant name]",
   "address": "[Full address]",
   "location": "[Neighbourhood]",
@@ -2687,19 +2684,19 @@ Return EXACTLY one JSON object (no markdown, no other text):
   "why_this_client": "[Why this suits the stated preferences]",
   "insider_tip": "[One piece of practical advice]"
 }}"""
-
-        else:  # attractions
-            prompt = f"""You are a travel writer.
-Find ONE attraction in {location} that has NOT already been suggested.
+            user_prompt = f"""Find one restaurant in {location}.
 
 {exclude_block}
-Context: {day_context}
-Attraction interests: {categories or 'general sightseeing'}
-Budget: {budget} | Travel radius: {distance}
+Context: {day_context} {meal_hint}
+Cuisine preferences: {cuisines_str or 'any local'}
+Budget: {budget} | Travel radius: {distance}"""
 
-Return EXACTLY one JSON object (no markdown, no other text):
-{{
-  "day": {day},
+        else:  # attractions
+            system_prompt = """You are a travel writer.
+Find ONE real, currently accessible attraction that has NOT already been suggested.
+Return EXACTLY one JSON object, no markdown, no other text:
+{
+  "day": [day number],
   "time": "[time slot]",
   "name": "[Attraction name]",
   "address": "[Full address]",
@@ -2714,7 +2711,13 @@ Return EXACTLY one JSON object (no markdown, no other text):
   "why_this_client": "[Why this suits the stated preferences]",
   "highlight": "[Single best specific thing]",
   "insider_tip": "[One practical tip most visitors miss]"
-}}"""
+}"""
+            user_prompt = f"""Find one attraction in {location}.
+
+{exclude_block}
+Context: {day_context}
+Attraction interests: {categories or 'general sightseeing'}
+Budget: {budget} | Travel radius: {distance}"""
 
         logger.info(
             "Replace: type=%s idx=%d day=%d location=%s excluded=%d",
@@ -2724,7 +2727,8 @@ Return EXACTLY one JSON object (no markdown, no other text):
         message = anthropic_client.messages.create(
             model=SCOUT_MODEL,
             max_tokens=1200,
-            messages=[{"role": "user", "content": prompt}]
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
         )
         # Extract text from the first text-type content block
         raw_text = ''
