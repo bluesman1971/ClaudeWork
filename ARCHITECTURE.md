@@ -107,6 +107,16 @@ flask create-user --role staff
 ### Login rate limiting
 Failed login attempts are tracked per IP address in memory. After 10 failures within 5 minutes, the IP is blocked for 10 minutes and receives HTTP 429. This resets on server restart (acceptable for defence-in-depth; a Redis-backed store would be needed for persistent rate limiting across multiple workers).
 
+### Per-user AI endpoint rate limiting
+Authenticated users are rate-limited on the two expensive AI endpoints to prevent runaway API cost from a single account:
+
+| Endpoint | Limit | Window |
+|---|---|---|
+| `POST /generate` | 20 requests | 10 minutes |
+| `POST /replace` | 60 requests | 10 minutes |
+
+Implemented in `auth.py` via `check_user_rate_limit(user_id, endpoint)`, using the same sliding-window in-memory pattern as login rate limiting. The limit is keyed by `(user_id, endpoint)` so each user has an independent budget per endpoint. Returns HTTP 429 with a `retry_after` count in the error message. Like the login limiter, this is per-worker and resets on restart — a Redis-backed store would be needed for strict enforcement in a multi-worker public deployment.
+
 ---
 
 ## How the AI scouts work
@@ -153,10 +163,10 @@ The review screen lets consultants request one alternative for any item they dis
 
 **How it works:**
 
-1. The frontend sends `session_id`, `trip_id`, `type` (photos/restaurants/attractions), `index`, `day`, `meal_type`, and `exclude_names` (names of all current items in that category)
+1. The frontend sends `session_id`, `trip_id`, `type` (photos/restaurants/attractions), `index`, `day`, `meal_type`, and `exclude_names` (names of current items — used as a fallback only; see step 4)
 2. The endpoint resolves the original trip parameters (location, budget, distance, cuisine/interest preferences) from the DB `Trip` record — this is intentional for multi-worker safety (avoids relying on the in-memory session store which may not be present on the worker handling this request)
 3. The client profile is reloaded from the DB if the trip has a `client_id`
-4. A focused single-item prompt is built with an explicit exclusion block listing all current item names, so the model cannot return a duplicate
+4. **Exclusion list is rebuilt server-side:** `_names_from_raw()` parses the relevant `raw_*` JSON column from the DB `Trip` record and extracts the `"name"` field from each stored item. This means the exclusion list is always built from server-generated, verified data — not client-supplied text. The client's `exclude_names` payload is only used as a sanitised fallback when no DB trip record is available (rare in-memory-only case). This eliminates the injection surface that existed when client-supplied names were placed verbatim into the prompt.
 5. The Anthropic API is called with `max_tokens=1200`
 6. **Response parsing:** The model sometimes wraps output in markdown code fences (` ```json ... ``` `). The endpoint strips these before attempting JSON parsing. It first tries `_parse_json_lines()` (for responses where the JSON is on a single line), then falls back to `json.loads()` (for pretty-printed multi-line responses)
 7. Google Places verification runs on the replacement if enabled
@@ -272,7 +282,8 @@ _migrations = [
 | `SameSite=Lax` cookie | `auth.py` | Browser won't send cookie on cross-site requests — primary CSRF defence |
 | `X-Requested-With` CSRF header | `auth.py` + `index.html` | Secondary CSRF defence — all state-changing requests require this custom header, which browsers never attach automatically on cross-site requests |
 | bcrypt password hashing | `auth.py` | Passwords stored as bcrypt hashes with 12 rounds — slow enough to resist brute force |
-| Login rate limiting | `auth.py` | Max 10 failures per IP per 5 minutes, then 10-minute lockout |
+| Login rate limiting | `auth.py` | Max 10 failures per IP per 5 minutes, then 10-minute lockout — in-memory, per-worker |
+| Per-user AI rate limiting | `auth.py` | `/generate`: 20 req/10 min per user; `/replace`: 60 req/10 min per user — returns HTTP 429 with `retry_after` seconds |
 | Generic auth error messages | `auth.py` | "Invalid email or password" — never reveals whether the email exists |
 | HTTP security headers | `app.py` | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`, HSTS (production only) |
 | SSRF guard | `app.py` | `_fetch_static_map_as_base64()` only fetches from `https://maps.googleapis.com/` — blocks server-side request forgery |
@@ -290,7 +301,7 @@ The system/user role separation is the primary defence. Additional hardening ste
 | Length caps on free-text fields | ✅ Implemented | Constants `MAX_FIELD_SHORT` (150), `MAX_FIELD_MEDIUM` (500), `MAX_EXCLUDE_NAME_LEN` (100), `MAX_EXCLUDE_LIST_LEN` (50) in `app.py`. Applied to `accommodation`, `pre_planned`, `budget`, `distance` in `/generate`; each `exclude_names` entry and the list itself in `/replace`; all string fields in `POST /clients` and `PUT /clients/<id>`. |
 | Newline stripping on single-line fields | ✅ Implemented | `_sanitise_line()` in `app.py` and `_clamp()` in `clients.py` run `re.sub(r'\s+', ' ', ...)` before truncation. Applied to all single-line fields: location, accommodation, budget, distance, each `exclude_names` entry; and all client fields except `notes`. Multi-line fields (`pre_planned`, `notes`) strip ends only — internal newlines are intentional. |
 | `exclude_names` server-side validation | ✅ Implemented | `/replace` now ignores the client-supplied `exclude_names` when a DB trip is found. Instead it calls `_names_from_raw()` which parses `db_trip.raw_photos/raw_restaurants/raw_attractions` and extracts the `"name"` field from each stored item — data that was generated and verified by the server at `/generate` time. The client list is only used as a sanitised fallback for in-memory-only sessions (no DB record). |
-| Per-user rate limiting on `/generate` | ❌ Not implemented | Auth rate limiting only covers `/auth/login`. An authenticated user can hammer `/generate` unlimited times |
+| Per-user rate limiting on `/generate` and `/replace` | ✅ Implemented | `check_user_rate_limit(user_id, endpoint)` in `auth.py`. Limits: 20 `/generate` calls per user per 10 min; 60 `/replace` calls per user per 10 min. Returns HTTP 429 with seconds-to-retry in the error message. In-memory, per-worker — sufficient for an internal tool. |
 
 ---
 
@@ -336,7 +347,9 @@ All routes except `/`, `/health`, and `/auth/login` require authentication (vali
   "exclude_names": ["Restaurant A", "Restaurant B"]
 }
 ```
-Returns `{ "item": { ...full scout item dict... } }` on success, or `{ "error": "..." }` with HTTP 422 if the model fails to produce a parseable alternative.
+**Note on `exclude_names`:** when a DB trip record is found (the normal case), this field is ignored — the server rebuilds the exclusion list from `db_trip.raw_restaurants` (or `raw_photos`/`raw_attractions`) directly. The field is only used as a sanitised fallback for in-memory-only sessions.
+
+Returns `{ "item": { ...full scout item dict... } }` on success, or `{ "error": "..." }` with HTTP 422 if the model fails to produce a parseable alternative. Returns HTTP 429 if the user has exceeded their rate limit.
 
 ---
 
@@ -438,7 +451,7 @@ Railway → your service → **Deployments** → click the active deployment →
 
 - **In-memory session store and cache** — `_session_store` and `_cache` in `app.py` are plain Python dicts. They reset on every deploy and are not shared between Gunicorn workers. For a multi-worker setup this can cause "session not found" errors if the `/finalize` request hits a different worker than `/generate`. The `/replace` endpoint works around this by always resolving trip parameters from the DB `Trip` record rather than the session store — but `/finalize` still uses the session store and could be affected. A Redis store (e.g. Railway Redis add-on) would fix this properly.
 
-- **In-memory login rate limiter** — resets on restart, and is per-worker (not shared across workers). Good enough for defence-in-depth, but a Redis-backed limiter would be more robust.
+- **In-memory rate limiters** — both the login rate limiter (`auth.py`) and the per-user AI endpoint limiter (`auth.py`) are plain in-memory dicts. They reset on every deploy and are not shared between Gunicorn workers. For a strictly enforced public deployment, back them with Redis (e.g. the Railway Redis add-on). For the current internal-staff use case they are adequate.
 
 - **Schema migrations are append-only** — the `_migrations` list in `app.py` handles adding new columns to existing tables automatically on startup. However, renaming or removing columns, adding constraints, or changing column types still requires manual intervention (run the SQL directly in the Supabase dashboard). For complex schema evolution, adopt Flask-Migrate / Alembic.
 

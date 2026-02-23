@@ -69,6 +69,54 @@ def _record_login_failure(ip: str):
         _login_attempts[ip].append(time.time())
 
 
+# ── Per-user AI endpoint rate limiting ───────────────────────────────────────
+# Limits authenticated users from hammering the expensive AI scout endpoints.
+# Keyed by (user_id, endpoint) so /generate and /replace have independent budgets.
+# Uses the same sliding-window pattern as login rate limiting.
+# In-memory only — resets on restart, which is acceptable for an internal tool.
+# For a public deployment, back this with Redis for persistence across workers.
+
+RATE_LIMIT_RULES: dict[str, tuple[int, int]] = {
+    # endpoint_key -> (max_requests, window_seconds)
+    'generate': (20, 600),   # 20 calls per 10 minutes
+    'replace':  (60, 600),   # 60 calls per 10 minutes
+}
+
+_user_requests: dict = defaultdict(list)  # (user_id, endpoint) -> [timestamp, ...]
+_user_rate_lock = threading.Lock()
+
+
+def check_user_rate_limit(user_id: int, endpoint: str) -> tuple[bool, int]:
+    """
+    Check whether user_id is within their rate limit for the given endpoint key.
+
+    Returns (allowed: bool, retry_after_seconds: int).
+    If allowed, also records this request timestamp.
+    If not allowed, retry_after_seconds is the number of seconds until the
+    oldest request in the window expires (i.e. when a slot opens up).
+    """
+    rule = RATE_LIMIT_RULES.get(endpoint)
+    if rule is None:
+        return True, 0   # unknown endpoint — let it through
+
+    max_requests, window = rule
+    key = (user_id, endpoint)
+    now = time.time()
+
+    with _user_rate_lock:
+        # Prune timestamps outside the sliding window
+        _user_requests[key] = [t for t in _user_requests[key] if now - t < window]
+
+        if len(_user_requests[key]) >= max_requests:
+            oldest = min(_user_requests[key])
+            retry_after = int(window - (now - oldest)) + 1
+            return False, retry_after
+
+        # Record this request
+        _user_requests[key].append(now)
+        return True, 0
+
+
 # ── JWT helpers ──────────────────────────────────────────────────────────────
 
 def _secret():

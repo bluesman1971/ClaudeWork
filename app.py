@@ -24,7 +24,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from models import db, Trip
-from auth import auth_bp, require_auth, register_cli
+from auth import auth_bp, require_auth, register_cli, check_user_rate_limit
 from clients import clients_bp
 from trips import trips_bp
 
@@ -2111,6 +2111,15 @@ def health():
 def generate_trip_guide():
     """Generate complete trip guide (requires login)."""
     try:
+        # Per-user rate limit — checked before any expensive work
+        allowed, retry_after = check_user_rate_limit(g.current_user.id, 'generate')
+        if not allowed:
+            logger.warning("Rate limit hit: user_id=%d /generate retry_after=%ds",
+                           g.current_user.id, retry_after)
+            return jsonify({
+                'error': f'Too many requests. Please wait {retry_after} seconds before trying again.'
+            }), 429
+
         data = request.json
 
         # Validate required base fields
@@ -2585,6 +2594,15 @@ def replace_item():
         { "item": { ...scout item dict... } }
     """
     try:
+        # Per-user rate limit — checked before any expensive work
+        allowed, retry_after = check_user_rate_limit(g.current_user.id, 'replace')
+        if not allowed:
+            logger.warning("Rate limit hit: user_id=%d /replace retry_after=%ds",
+                           g.current_user.id, retry_after)
+            return jsonify({
+                'error': f'Too many requests. Please wait {retry_after} seconds before trying again.'
+            }), 429
+
         data       = request.get_json(force=True) or {}
         session_id = str(data.get('session_id', '')).strip()
         trip_id    = data.get('trip_id')
