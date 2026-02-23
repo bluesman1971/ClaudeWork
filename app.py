@@ -2592,12 +2592,11 @@ def replace_item():
         item_idx   = int(data.get('index', 0))
         day        = int(data.get('day', 1))
         meal_type  = data.get('meal_type') or None
-        raw_excludes  = (data.get('exclude_names') or [])
-        exclude_names = [
-            s for s in (
-                _sanitise_line(n, MAX_EXCLUDE_NAME_LEN) for n in raw_excludes if n
-            ) if s
-        ][:MAX_EXCLUDE_LIST_LEN]
+        # exclude_names is rebuilt server-side from the DB trip's raw_* arrays
+        # so the client cannot inject arbitrary text via this field.
+        # The client-supplied list is only used as a fallback for in-memory-only
+        # sessions (no DB trip), where we still sanitise each entry.
+        _client_excludes = (data.get('exclude_names') or [])
 
         if item_type not in ('photos', 'restaurants', 'attractions'):
             return jsonify({'error': 'Invalid type'}), 400
@@ -2637,6 +2636,34 @@ def replace_item():
 
         if not location:
             return jsonify({'error': 'Could not resolve trip location.'}), 400
+
+        # ── Build exclude_names from server-side data ───────────────────────
+        # If we have a DB trip, extract item names from the stored raw_* JSON
+        # so the exclusion list is entirely server-controlled (no client input).
+        # Fall back to the sanitised client-supplied list only for in-memory
+        # sessions that have no DB record (rare: DB unavailable at generate time).
+        def _names_from_raw(raw_json: str | None) -> list[str]:
+            """Extract 'name' field from each item in a raw_* JSON array."""
+            if not raw_json:
+                return []
+            try:
+                items = json.loads(raw_json)
+                return [str(it['name']) for it in items if isinstance(it, dict) and it.get('name')]
+            except Exception:
+                return []
+
+        if db_trip:
+            raw_col = {'photos': db_trip.raw_photos,
+                       'restaurants': db_trip.raw_restaurants,
+                       'attractions': db_trip.raw_attractions}.get(item_type)
+            exclude_names = _names_from_raw(raw_col)
+        else:
+            # In-memory session fallback — sanitise client-supplied names
+            exclude_names = [
+                s for s in (
+                    _sanitise_line(n, MAX_EXCLUDE_NAME_LEN) for n in _client_excludes if n
+                ) if s
+            ][:MAX_EXCLUDE_LIST_LEN]
 
         # ── Load client profile if trip has one ────────────────────────────
         client_profile = None
