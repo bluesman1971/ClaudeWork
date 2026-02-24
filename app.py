@@ -1,626 +1,331 @@
 #!/usr/bin/env python3
 """
-Trip Master Web App - Backend API (Haiku 4.5 with Rich Photo Details)
-Orchestrates Photo Scout, Restaurant Scout, and Attraction Scout via Anthropic API
+Trip Master Web App — Backend API (FastAPI, async)
+
+Phase 2: Flask → FastAPI migration.
+- AsyncAnthropic replaces sync Anthropic (no thread blocking on AI calls)
+- httpx.AsyncClient replaces urllib.request (no thread blocking on HTTP)
+- asyncio.gather replaces ThreadPoolExecutor for all three parallel workloads
+- Pydantic v2 schemas replace all manual _sanitise_line / _clamp validation
+- Depends(get_current_user) replaces the @require_auth decorator
+- run_in_threadpool wraps synchronous SQLAlchemy / bcrypt calls
+- No Flask app context required anywhere — _with_app_context deleted
 """
 
+import asyncio
+import base64
+import hashlib
+import json
+import logging
+import math
 import os
 import re
-import json
 import time
-import uuid
-import base64
-import logging
-import hashlib
 import urllib.parse
-import urllib.request
+import uuid
 from collections import defaultdict
-from html import escape
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, request, jsonify, g, send_from_directory
-from flask_cors import CORS
-from anthropic import Anthropic
+from html import escape
+
+import httpx
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
-from models import db, Trip
-from auth import auth_bp, require_auth, register_cli, check_user_rate_limit
-from clients import clients_bp
+from auth import (
+    COOKIE_NAME,
+    TOKEN_TTL_H,
+    auth_router,
+    check_user_rate_limit,
+    get_current_user,
+)
+from clients import clients_router
+from database import engine, get_db
+from models import Client, StaffUser, Trip, db
 from redis_client import get_redis
-from trips import trips_bp
+from schemas import FinalizeRequest, GenerateRequest, ReplaceRequest
+from trips import trips_router
 
-# Load .env from the same directory as this file, regardless of working directory
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'), override=True)
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s'
+    format='%(asctime)s [%(levelname)s] %(message)s',
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+BASE_DIR = os.path.dirname(__file__)
 
-# ── Database configuration ───────────────────────────────────────────────────
-# Default: SQLite (trip_master.db in the project folder).
-# For production, set DATABASE_URL to a PostgreSQL connection string.
-#
-# URL safety: special characters in the password (@, #, ?, /, +, etc.) can
-# break SQLAlchemy's URL parser.  We use SQLAlchemy's own make_url() to parse
-# the raw string and re-serialise it — which correctly percent-encodes the
-# password component — before handing it to SQLALCHEMY_DATABASE_URI.
-# This means you can paste the raw Supabase connection string into Railway
-# without manually URL-encoding anything.
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
 
-def _safe_db_url(raw: str) -> str:
-    """
-    Parse a database URL with make_url() so SQLAlchemy handles any special
-    characters in the password, then return the normalised string.
-    Falls through unchanged for SQLite URLs (no password to worry about).
-    """
-    if not raw or raw.startswith('sqlite'):
-        return raw
-    try:
-        from sqlalchemy.engine import make_url
-        u = make_url(raw)
-        # Re-serialise: make_url percent-encodes the password automatically
-        return u.render_as_string(hide_password=False)
-    except Exception as exc:
-        logger.warning("Could not parse DATABASE_URL with make_url (%s) — using raw value", exc)
-        return raw
+app = FastAPI(title='Trip Master API', docs_url=None, redoc_url=None)
 
-_raw_db_url = os.getenv('DATABASE_URL', f"sqlite:///{os.path.join(os.path.dirname(__file__), 'trip_master.db')}")
-_db_url     = _safe_db_url(_raw_db_url)
-
-app.config['SQLALCHEMY_DATABASE_URI']        = _db_url
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# SQLite concurrency tuning: raise the busy-timeout so concurrent writes queue
-# instead of immediately raising "database is locked".  WAL mode is applied via
-# event.listen below so every connection (not just the first) benefits.
-if _db_url.startswith('sqlite'):
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'connect_args': {'timeout': 15}}
-
-# ── JWT secret key ───────────────────────────────────────────────────────────
-_jwt_secret = os.getenv('JWT_SECRET_KEY', '')
-if not _jwt_secret:
-    if os.getenv('FLASK_ENV') == 'production':
-        raise RuntimeError(
-            "JWT_SECRET_KEY environment variable must be set in production. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
-        )
-    _jwt_secret = 'dev-secret-change-me'
-    logger.warning("JWT_SECRET_KEY not set — using insecure default. Set it in .env for any real use.")
-app.config['JWT_SECRET_KEY'] = _jwt_secret
-
-# Initialise extensions
-db.init_app(app)
-
-# Register blueprints
-app.register_blueprint(auth_bp)
-app.register_blueprint(clients_bp)
-app.register_blueprint(trips_bp)
-
-# Register CLI commands (flask create-user)
-register_cli(app)
-
-# ── Redis startup check ───────────────────────────────────────────────────────
-# Force the lazy Redis connection to resolve now, at startup, so the connected /
-# fallback log line appears in deployment logs immediately rather than on the
-# first request. Uses WARNING so it's always visible regardless of log level.
-_redis_startup = get_redis()
-if _redis_startup is not None:
-    logger.warning("Redis connected and ready (session store, cache, rate limiters active)")
-else:
-    logger.warning("Redis unavailable — using in-memory fallbacks (set REDIS_URL to enable)")
-
-# Create DB tables and configure SQLite WAL mode.
-# The app_context block is required here because db.engine is lazily bound to
-# the app — accessing it outside a context raises RuntimeError.
-from sqlalchemy import event as _sa_event  # local alias avoids polluting namespace
-
-with app.app_context():
-    # Enable WAL (Write-Ahead Logging) for SQLite on every new connection.
-    # WAL allows concurrent readers and a single writer simultaneously; the
-    # default journal mode serialises all connections.  Registering via
-    # event.listen ensures every pooled connection — not just the first —
-    # gets WAL automatically.  This is a no-op for PostgreSQL and other DBs.
-    if _db_url.startswith('sqlite'):
-        @_sa_event.listens_for(db.engine, 'connect')
-        def _set_sqlite_wal(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute('PRAGMA journal_mode=WAL')
-            cursor.close()
-
-        # Also convert any existing DB file to WAL and prime the connection pool.
-        # We use a raw DBAPI cursor to bypass SQLAlchemy's transaction wrapping —
-        # PRAGMA journal_mode=WAL must be committed outside a transaction to
-        # take effect on the persistent file.
-        _raw_conn = db.engine.raw_connection()
-        try:
-            _cur = _raw_conn.cursor()
-            _cur.execute('PRAGMA journal_mode=WAL')
-            _cur.close()
-            _raw_conn.commit()
-        finally:
-            _raw_conn.close()
-
-    db.create_all()
-
-    # ── Column migrations for existing databases ──────────────────────────
-    # db.create_all() adds new *tables* but not new *columns* to existing ones.
-    # Run raw ALTER TABLE ... ADD COLUMN IF NOT EXISTS for each column added
-    # after the initial schema was deployed.  Safe to re-run on every startup.
-    _migrations = [
-        "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT",
-        "ALTER TABLE trips ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)",
-    ]
-    try:
-        with db.engine.connect() as _conn:
-            for _sql in _migrations:
-                _conn.execute(db.text(_sql))
-            _conn.commit()
-    except Exception as _mig_exc:
-        # SQLite doesn't support IF NOT EXISTS on ADD COLUMN — fall back to
-        # checking the column exists first.
-        logger.warning("Column migration skipped (likely SQLite): %s", _mig_exc)
-
-# CORS origins — comma-separated list read from the environment variable so
-# production deployments don't need code changes.  Falls back to localhost for
-# local development.  Set CORS_ORIGINS in .env or the server environment, e.g.:
-#   CORS_ORIGINS=https://tripmaster.example.com,https://www.tripmaster.example.com
+# ── CORS ─────────────────────────────────────────────────────────────────────
 _cors_origins = [
-    o.strip() for o in
-    os.getenv('CORS_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000').split(',')
+    o.strip()
+    for o in os.getenv(
+        'CORS_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000'
+    ).split(',')
     if o.strip()
 ]
-CORS(app, origins=_cors_origins, supports_credentials=True)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
-# ── HTTP security headers ─────────────────────────────────────────────────────
-# Applied to every response.  These headers are defence-in-depth that don't
-# require any application logic changes and have negligible performance cost.
-@app.after_request
-def _set_security_headers(response):
-    # Prevent browsers from MIME-sniffing the content-type
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    # Block the page from being embedded in an iframe (clickjacking protection)
-    response.headers['X-Frame-Options'] = 'DENY'
-    # Enable browser XSS filter (legacy browsers)
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    # Only send the origin (no path/query) in the Referer header when navigating away
-    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    # Restrict powerful browser features that this app doesn't need
-    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
-    # HSTS: tell browsers to always use HTTPS (production only — dev may use HTTP)
+# ── Security headers ──────────────────────────────────────────────────────────
+@app.middleware('http')
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers['X-Content-Type-Options']  = 'nosniff'
+    response.headers['X-Frame-Options']          = 'DENY'
+    response.headers['X-XSS-Protection']         = '1; mode=block'
+    response.headers['Referrer-Policy']           = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy']        = 'geolocation=(), microphone=(), camera=()'
     if os.getenv('FLASK_ENV') == 'production':
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return response
 
-# Initialize Anthropic client (renamed to avoid clash with 'client' variable in route bodies)
-# Use the plain default client — curl confirms Railway can reach api.anthropic.com
-# fine, so no custom transport or proxy configuration is needed.
-anthropic_client = Anthropic()
 
-# --- Constants ---
+# ── Sliding JWT cookie ────────────────────────────────────────────────────────
+@app.middleware('http')
+async def slide_auth_cookie(request: Request, call_next):
+    """Re-issue the auth cookie with a fresh TTL after each authenticated request."""
+    response = await call_next(request)
+    token = getattr(request.state, 'slide_token', None)
+    if token:
+        response.set_cookie(
+            COOKIE_NAME, token,
+            httponly=True,
+            samesite='lax',
+            secure=(os.getenv('FLASK_ENV') == 'production'),
+            max_age=TOKEN_TTL_H * 3600,
+            path='/',
+        )
+    return response
 
-# ── Scout model ───────────────────────────────────────────────────────────────
-# Change SCOUT_MODEL in .env to switch all three scouts to a new model without
-# touching any other code.  The display name is derived automatically so the
-# health endpoint and response JSON stay in sync.
-SCOUT_MODEL        = os.getenv('SCOUT_MODEL', 'claude-haiku-4-5-20251001')
-SCOUT_MODEL_LABEL  = os.getenv('SCOUT_MODEL_LABEL', 'Claude Haiku 4.5')
 
-PHOTOS_PER_DAY = 3
+# ── Map HTTPException → { "error": "..." } ────────────────────────────────────
+# FastAPI's default shape is { "detail": "..." }; the frontend expects "error".
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={'error': exc.detail})
+
+
+# ── Router registration ───────────────────────────────────────────────────────
+app.include_router(auth_router)
+app.include_router(clients_router)
+app.include_router(trips_router)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SCOUT_MODEL       = os.getenv('SCOUT_MODEL',       'claude-haiku-4-5-20251001')
+SCOUT_MODEL_LABEL = os.getenv('SCOUT_MODEL_LABEL', 'Claude Haiku 4.5')
+
+PHOTOS_PER_DAY      = 3
 RESTAURANTS_PER_DAY = 3
 ATTRACTIONS_PER_DAY = 4
-MAX_LOCATION_LENGTH   = 100
-MAX_FIELD_SHORT       = 150   # single-line fields: accommodation, travel_style, home_city, dietary_requirements
-MAX_FIELD_MEDIUM      = 500   # multi-line fields: pre_planned, notes
-MAX_EXCLUDE_NAME_LEN  = 100   # each name in exclude_names
-MAX_EXCLUDE_LIST_LEN  = 50    # total items in exclude_names list
-MIN_DURATION = 1
-MAX_DURATION = 14
 
+GOOGLE_PLACES_API_KEY  = os.getenv('GOOGLE_PLACES_API_KEY', '')
+PLACES_VERIFY_ENABLED  = bool(GOOGLE_PLACES_API_KEY)
+PLACES_API_URL         = 'https://places.googleapis.com/v1/places:searchText'
+PLACES_VERIFY_TIMEOUT  = 5   # seconds
 
-def _sanitise_line(value, max_len: int) -> str | None:
-    """
-    Sanitise a single-line text field before prompt interpolation.
-    - Collapses all whitespace (including \\n, \\r, \\t) to a single space
-    - Strips leading/trailing whitespace
-    - Truncates to max_len characters
-    - Returns None if the result is empty
+STATUS_OPERATIONAL        = 'OPERATIONAL'
+STATUS_CLOSED_TEMPORARILY = 'CLOSED_TEMPORARILY'
+STATUS_CLOSED_PERMANENTLY = 'CLOSED_PERMANENTLY'
+STATUS_UNVERIFIED         = 'UNVERIFIED'
 
-    Use this for every field that appears on a single logical line in a
-    prompt (location, accommodation, dietary_requirements, etc.).
-    Multi-line fields (pre_planned, notes) should only be stripped, not
-    collapsed, since embedded newlines are intentional there.
-    """
-    s = re.sub(r'\s+', ' ', str(value)).strip()[:max_len]
-    return s or None
+CACHE_TTL_SECONDS   = 3600
+SESSION_TTL_SECONDS = 3600
 
-# Google Places API
-GOOGLE_PLACES_API_KEY = os.getenv('GOOGLE_PLACES_API_KEY', '')
-PLACES_VERIFY_ENABLED = bool(GOOGLE_PLACES_API_KEY)
-PLACES_API_URL = 'https://places.googleapis.com/v1/places:searchText'
-PLACES_VERIFY_TIMEOUT = 5  # seconds per request
+SCOUT_MAX_RETRIES = 2
+SCOUT_RETRY_DELAY = 1.0
 
-# Verification status constants
-STATUS_OPERATIONAL         = 'OPERATIONAL'
-STATUS_CLOSED_TEMPORARILY  = 'CLOSED_TEMPORARILY'
-STATUS_CLOSED_PERMANENTLY  = 'CLOSED_PERMANENTLY'
-STATUS_UNVERIFIED          = 'UNVERIFIED'
+MAX_EXCLUDE_NAME_LEN = 100
+MAX_EXCLUDE_LIST_LEN = 50
 
-# TTLs (seconds) — shared by both Redis and in-memory fallback paths
-CACHE_TTL_SECONDS   = 3600  # 1 hour — scout result cache
-SESSION_TTL_SECONDS = 3600  # 1 hour — review session store
-
-# ── In-memory fallbacks (used when Redis is unavailable) ─────────────────────
-# Structure mirrors the Redis representation so callers behave identically.
-#   _cache:         key -> (timestamp_float, result)
-#   _session_store: session_id -> { ts, location, duration, colors, photos,
-#                                   restaurants, attractions }
-_cache: dict = {}
-_session_store: dict = {}
-
-# Scout retry settings — if a scout returns 0 items (malformed response or Places wipeout),
-# retry up to SCOUT_MAX_RETRIES times before surfacing a warning to the user.
-# Empty results are never cached, so each retry always hits the API fresh.
-SCOUT_MAX_RETRIES = 2    # attempts after the initial run
-SCOUT_RETRY_DELAY = 1.0  # seconds between retry attempts
-
-# Color palettes for different locations
 COLOR_PALETTES = {
-    "barcelona": {
-        "primary": "#c41e3a",
-        "accent": "#f4a261",
-        "secondary": "#2a9d8f",
-        "neutral": "#f5e6d3"
-    },
-    "paris": {
-        "primary": "#1a1a2e",
-        "accent": "#d4a574",
-        "secondary": "#16213e",
-        "neutral": "#f0e6d2"
-    },
-    "tokyo": {
-        "primary": "#8B0000",
-        "accent": "#FFD700",
-        "secondary": "#1a1a1a",
-        "neutral": "#f5f5f5"
-    },
-    "default": {
-        "primary": "#2c3e50",
-        "accent": "#e67e22",
-        "secondary": "#34495e",
-        "neutral": "#ecf0f1"
-    }
+    'barcelona': {'primary': '#c41e3a', 'accent': '#f4a261', 'secondary': '#2a9d8f', 'neutral': '#f5e6d3'},
+    'paris':     {'primary': '#1a1a2e', 'accent': '#d4a574', 'secondary': '#16213e', 'neutral': '#f0e6d2'},
+    'tokyo':     {'primary': '#8B0000', 'accent': '#FFD700', 'secondary': '#1a1a1a', 'neutral': '#f5f5f5'},
+    'default':   {'primary': '#2c3e50', 'accent': '#e67e22', 'secondary': '#34495e', 'neutral': '#ecf0f1'},
 }
 
+# ---------------------------------------------------------------------------
+# In-memory fallbacks (used when Redis is unavailable)
+# ---------------------------------------------------------------------------
 
-def verify_place_with_google(name, address, location_context):
-    """
-    Query the Google Places API (Text Search) to verify a place is still
-    operational. Returns a dict with:
-      - status: OPERATIONAL | CLOSED_TEMPORARILY | CLOSED_PERMANENTLY | UNVERIFIED
-      - maps_url: confirmed Google Maps URL (or None)
-      - place_id: Places place ID (or None)
-    Falls back to UNVERIFIED on any error.
-    """
-    if not PLACES_VERIFY_ENABLED:
-        return {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
+_cache: dict         = {}
+_session_store: dict = {}
 
-    # Build a specific search query: "Name, Address, City"
-    query_parts = [p for p in [name, address, location_context] if p]
-    query = ', '.join(query_parts)
+# ---------------------------------------------------------------------------
+# HTTP client singleton (shared across requests)
+# ---------------------------------------------------------------------------
 
-    payload = json.dumps({
-        'textQuery': query,
-        'maxResultCount': 1,
-    }).encode('utf-8')
+_http_client: httpx.AsyncClient | None = None
 
-    req = urllib.request.Request(
-        PLACES_API_URL,
-        data=payload,
-        headers={
-            'Content-Type': 'application/json',
-            'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
-            'X-Goog-FieldMask': 'places.id,places.displayName,places.businessStatus,places.googleMapsUri,places.location',
-        },
-        method='POST'
+# ---------------------------------------------------------------------------
+# Anthropic client
+# ---------------------------------------------------------------------------
+
+anthropic_client = AsyncAnthropic()
+
+# ---------------------------------------------------------------------------
+# Startup / shutdown
+# ---------------------------------------------------------------------------
+
+@app.on_event('startup')
+async def startup():
+    global _http_client
+    _http_client = httpx.AsyncClient(
+        timeout=10,
+        headers={'User-Agent': 'TripGuideApp/1.0'},
     )
 
+    # Create DB tables + run column migrations
+    await run_in_threadpool(_init_db)
+
+    # Redis connectivity check (visible in Railway logs at WARNING level)
+    r = get_redis()
+    if r is not None:
+        logger.warning('Redis connected and ready (session store, cache, rate limiters active)')
+    else:
+        logger.warning('Redis unavailable — using in-memory fallbacks (set REDIS_URL to enable)')
+
+
+@app.on_event('shutdown')
+async def shutdown():
+    if _http_client:
+        await _http_client.aclose()
+
+
+def _init_db():
+    """Create all tables and run ADD COLUMN migrations. Called once at startup."""
+    db.metadata.create_all(engine)
+
+    migrations = [
+        'ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT',
+        'ALTER TABLE trips ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)',
+    ]
     try:
-        with urllib.request.urlopen(req, timeout=PLACES_VERIFY_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-
-        places = data.get('places', [])
-        if not places:
-            logger.info("Places API: no result for %r", query)
-            return {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
-
-        place = places[0]
-        business_status = place.get('businessStatus', STATUS_UNVERIFIED)
-        place_id  = place.get('id')
-        maps_url  = place.get('googleMapsUri')
-
-        # Extract lat/lng if provided
-        loc = place.get('location', {})
-        lat = loc.get('latitude')
-        lng = loc.get('longitude')
-
-        # Normalise: API returns e.g. "OPERATIONAL" or "CLOSED_PERMANENTLY"
-        if business_status not in (STATUS_OPERATIONAL, STATUS_CLOSED_TEMPORARILY, STATUS_CLOSED_PERMANENTLY):
-            business_status = STATUS_UNVERIFIED
-
-        logger.info("Places API: %r → %s (place_id=%s lat=%s lng=%s)",
-                    query[:60], business_status, place_id, lat, lng)
-        return {'status': business_status, 'maps_url': maps_url, 'place_id': place_id,
-                'lat': lat, 'lng': lng}
-
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            for sql in migrations:
+                conn.execute(text(sql))
+            conn.commit()
     except Exception as exc:
-        logger.warning("Places API error for %r: %s", query[:60], exc)
-        return {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
+        # SQLite doesn't support IF NOT EXISTS on ADD COLUMN
+        logger.warning('Column migration skipped (likely SQLite): %s', exc)
 
 
-def verify_places_batch(items, name_key, address_key, location_context):
-    """
-    Run Places verification for a list of items in parallel.
-    Attaches '_status', '_maps_url', '_place_id' to each item in-place.
-    Permanently closed items are removed from the returned list.
-    Returns (verified_items, removed_count).
-    """
-    if not items:
-        return items, 0
+# ---------------------------------------------------------------------------
+# Cache helpers (Redis + in-memory fallback)
+# ---------------------------------------------------------------------------
 
-    # Launch all verifications concurrently.
-    # Each future is wrapped in _with_app_context so that any future developer
-    # who adds DB or current_app calls inside verify_place_with_google won't
-    # hit a RuntimeError: Working outside of application context.
-    with ThreadPoolExecutor(max_workers=min(10, len(items))) as executor:
-        futures = {
-            executor.submit(
-                _with_app_context,
-                verify_place_with_google,
-                item.get(name_key, ''),
-                item.get(address_key, ''),
-                location_context
-            ): item
-            for item in items
-        }
-        for future in as_completed(futures):
-            item = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                logger.warning("Verification future error: %s", exc)
-                result = {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
-            item['_status']   = result['status']
-            item['_maps_url'] = result['maps_url']
-            item['_place_id'] = result['place_id']
-            item['_lat']      = result.get('lat')
-            item['_lng']      = result.get('lng')
-
-    # Filter out any place that verification explicitly marks as unavailable.
-    # Only OPERATIONAL and UNVERIFIED items are kept — temporarily closed is
-    # treated the same as permanently closed (removed silently, never shown).
-    UNAVAILABLE = {STATUS_CLOSED_PERMANENTLY, STATUS_CLOSED_TEMPORARILY}
-    verified = [i for i in items if i.get('_status') not in UNAVAILABLE]
-    removed  = len(items) - len(verified)
-
-    if removed:
-        perm  = sum(1 for i in items if i.get('_status') == STATUS_CLOSED_PERMANENTLY)
-        temp  = sum(1 for i in items if i.get('_status') == STATUS_CLOSED_TEMPORARILY)
-        logger.info(
-            "Places verification: removed %d unavailable location(s) from %d candidates "
-            "(%d permanently closed, %d temporarily closed)",
-            removed, len(items), perm, temp
-        )
-    return verified, removed
-
-
-def _geocode_accommodation(address: str):
-    """
-    Look up the lat/lng of the accommodation address using the Places API
-    text search (same key and endpoint already used for venue verification).
-    Returns (lat, lng) floats, or (None, None) on failure / no API key.
-    """
-    if not PLACES_VERIFY_ENABLED or not address:
-        return None, None
-    try:
-        payload = json.dumps({'textQuery': address, 'maxResultCount': 1}).encode()
-        req = urllib.request.Request(
-            PLACES_API_URL,
-            data=payload,
-            headers={
-                'Content-Type':    'application/json',
-                'X-Goog-Api-Key':  GOOGLE_PLACES_API_KEY,
-                'X-Goog-FieldMask': 'places.location',
-            },
-            method='POST',
-        )
-        with urllib.request.urlopen(req, timeout=PLACES_VERIFY_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        places = data.get('places', [])
-        if not places:
-            return None, None
-        loc = places[0].get('location', {})
-        lat, lng = loc.get('latitude'), loc.get('longitude')
-        if lat is not None and lng is not None:
-            logger.info("Accommodation geocoded: %r → (%.5f, %.5f)", address[:60], lat, lng)
-            return float(lat), float(lng)
-    except Exception as exc:
-        logger.warning("Accommodation geocoding failed for %r: %s", address[:60], exc)
-    return None, None
-
-
-def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Return the great-circle distance in metres between two lat/lng points."""
-    import math
-    R = 6_371_000  # Earth radius in metres
-    φ1, φ2 = math.radians(lat1), math.radians(lat2)
-    Δφ = math.radians(lat2 - lat1)
-    Δλ = math.radians(lng2 - lng1)
-    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
-
-def _format_distance(metres: float) -> str:
-    """
-    Format a straight-line distance as a human-readable travel-time estimate.
-    Uses 80 m/min walking speed — a comfortable urban pace that accounts for
-    pavements and crossings without being as pessimistic as 60 m/min.
-    Straight-line distances are always shorter than actual routes, so the
-    walking-time estimate is intentionally a lower bound; the label says
-    '~' throughout to signal it is approximate.
-    """
-    walk_min = max(1, round(metres / 80))
-    if metres < 150:
-        return f"~{round(metres / 10) * 10} m · ~{walk_min} min walk"
-    if metres < 1000:
-        return f"~{round(metres / 50) * 50} m · ~{walk_min} min walk"
-    km = metres / 1000
-    return f"~{km:.1f} km · ~{walk_min} min walk"
-
-
-def _apply_distances(items: list, acc_lat: float, acc_lng: float) -> None:
-    """
-    Overwrite the `travel_time` field on each item that has verified
-    coordinates (_lat / _lng) with a haversine-derived distance estimate.
-    Items without coordinates (unverified) keep their Claude-generated text.
-    Mutates items in-place — no return value.
-    """
-    for item in items:
-        lat = item.get('_lat')
-        lng = item.get('_lng')
-        if lat is not None and lng is not None:
-            metres = _haversine_m(acc_lat, acc_lng, lat, lng)
-            item['travel_time'] = _format_distance(metres)
-
-
-def get_color_palette(location):
-    """Get color palette based on location"""
-    location_key = location.lower().split(",")[0].strip()
-    return COLOR_PALETTES.get(location_key, COLOR_PALETTES["default"])
-
-
-def _cache_key(*args):
-    """Generate a stable cache key from arguments."""
+def _cache_key(*args) -> str:
     raw = json.dumps(args, sort_keys=True)
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _get_cached(key):
-    """
-    Return cached scout result for key, or None on miss/expiry.
-
-    Redis path:  GET cache:{key}  (TTL enforced by Redis automatically)
-    Fallback:    check _cache dict with manual timestamp comparison
-    """
+def _get_cached(key: str):
     r = get_redis()
     if r is not None:
         try:
-            raw = r.get(f"cache:{key}")
+            raw = r.get(f'cache:{key}')
             if raw is not None:
                 return json.loads(raw)
         except Exception as exc:
-            logger.warning("Redis cache GET error: %s", exc)
+            logger.warning('Redis cache GET error: %s', exc)
         return None
-
-    # In-memory fallback
     entry = _cache.get(key)
     if entry and (time.time() - entry[0]) < CACHE_TTL_SECONDS:
         return entry[1]
     return None
 
 
-def _set_cached(key, value):
-    """
-    Store scout result in cache with TTL.
-
-    Redis path:  SETEX cache:{key} TTL json(value)
-    Fallback:    store (timestamp, value) in _cache dict
-    """
+def _set_cached(key: str, value) -> None:
     r = get_redis()
     if r is not None:
         try:
-            r.setex(f"cache:{key}", CACHE_TTL_SECONDS, json.dumps(value))
+            r.setex(f'cache:{key}', CACHE_TTL_SECONDS, json.dumps(value))
         except Exception as exc:
-            logger.warning("Redis cache SET error: %s", exc)
+            logger.warning('Redis cache SET error: %s', exc)
         return
-
-    # In-memory fallback
     _cache[key] = (time.time(), value)
 
 
-def _evict_sessions():
-    """
-    Remove expired review sessions from the in-memory fallback store.
-    No-op when Redis is active (Redis TTLs handle expiry automatically).
-    """
+# ---------------------------------------------------------------------------
+# Session helpers (Redis + in-memory fallback)
+# ---------------------------------------------------------------------------
+
+def _evict_sessions() -> None:
     r = get_redis()
     if r is not None:
-        return  # Redis handles TTL expiry automatically
-
-    cutoff = time.time() - SESSION_TTL_SECONDS
-    expired = [k for k, v in _session_store.items() if v['ts'] < cutoff]
+        return
+    cutoff  = time.time() - SESSION_TTL_SECONDS
+    expired = [k for k, v in _session_store.items() if v.get('ts', 0) < cutoff]
     for k in expired:
         del _session_store[k]
     if expired:
-        logger.info("Evicted %d expired review session(s)", len(expired))
+        logger.info('Evicted %d expired review session(s)', len(expired))
 
 
 def _session_set(session_id: str, payload: dict) -> None:
-    """
-    Persist a review session with TTL.
-
-    Redis path:  SETEX session:{id} TTL json(payload)
-    Fallback:    store payload in _session_store dict
-    """
     r = get_redis()
     if r is not None:
         try:
-            r.setex(f"session:{session_id}", SESSION_TTL_SECONDS, json.dumps(payload))
+            r.setex(f'session:{session_id}', SESSION_TTL_SECONDS, json.dumps(payload))
             return
         except Exception as exc:
-            logger.warning("Redis session SET error: %s — falling back to memory", exc)
-
-    # In-memory fallback (includes ts for manual eviction)
+            logger.warning('Redis session SET error: %s — falling back to memory', exc)
     _session_store[session_id] = {**payload, 'ts': time.time()}
 
 
 def _session_get(session_id: str) -> dict | None:
-    """
-    Retrieve a review session by ID, or None if missing/expired.
-
-    Redis path:  GET session:{id}
-    Fallback:    look up _session_store dict
-    """
     r = get_redis()
     if r is not None:
         try:
-            raw = r.get(f"session:{session_id}")
+            raw = r.get(f'session:{session_id}')
             if raw is not None:
                 return json.loads(raw)
         except Exception as exc:
-            logger.warning("Redis session GET error: %s — trying memory", exc)
-        # Redis miss (or error) — check in-memory as last resort
+            logger.warning('Redis session GET error: %s — trying memory', exc)
         entry = _session_store.get(session_id)
         if entry and (time.time() - entry.get('ts', 0)) < SESSION_TTL_SECONDS:
             return entry
         return None
-
-    # In-memory fallback
     entry = _session_store.get(session_id)
     if entry and (time.time() - entry.get('ts', 0)) < SESSION_TTL_SECONDS:
         return entry
     return None
 
 
-def _parse_json_lines(text, scout_name):
-    """
-    Parse newline-delimited JSON from an API response.
-    Logs a warning for any line that fails to parse.
-    """
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+def get_color_palette(location: str) -> dict:
+    key = location.lower().split(',')[0].strip()
+    return COLOR_PALETTES.get(key, COLOR_PALETTES['default'])
+
+
+def _parse_json_lines(text: str, scout_name: str) -> list:
     results = []
     for line in text.strip().split('\n'):
         line = line.strip()
@@ -629,46 +334,291 @@ def _parse_json_lines(text, scout_name):
         try:
             results.append(json.loads(line))
         except json.JSONDecodeError as exc:
-            logger.warning("%s: failed to parse JSON line (%s): %r", scout_name, exc, line[:120])
+            logger.warning('%s: failed to parse JSON line (%s): %r', scout_name, exc, line[:120])
     return results
 
 
-def call_photo_scout(location, duration, interests, distance, per_day=None,
-                     accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude to generate detailed photography locations with coordinates.
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6_371_000
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lng2 - lng1)
+    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
 
-    accommodation:  optional hotel/address string — travel origin for distance advice.
-    pre_planned:    optional free-text — already-booked or must-see items the client
-                    has committed to; scouts avoid duplicating these.
-    client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, dietary_requirements, notes.
+
+def _format_distance(metres: float) -> str:
+    walk_min = max(1, round(metres / 80))
+    if metres < 150:
+        return f'~{round(metres / 10) * 10} m · ~{walk_min} min walk'
+    if metres < 1000:
+        return f'~{round(metres / 50) * 50} m · ~{walk_min} min walk'
+    km = metres / 1000
+    return f'~{km:.1f} km · ~{walk_min} min walk'
+
+
+def _apply_distances(items: list, acc_lat: float, acc_lng: float) -> None:
+    for item in items:
+        lat = item.get('_lat')
+        lng = item.get('_lng')
+        if lat is not None and lng is not None:
+            metres = _haversine_m(acc_lat, acc_lng, lat, lng)
+            item['travel_time'] = _format_distance(metres)
+
+
+# ---------------------------------------------------------------------------
+# Google Places verification (async)
+# ---------------------------------------------------------------------------
+
+async def verify_place_with_google(name: str, address: str, location_context: str) -> dict:
+    """Query the Google Places API to verify a place is still operational."""
+    _unverified = {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
+    if not PLACES_VERIFY_ENABLED:
+        return _unverified
+
+    query = ', '.join(p for p in [name, address, location_context] if p)
+    payload = {'textQuery': query, 'maxResultCount': 1}
+    headers = {
+        'Content-Type':   'application/json',
+        'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.businessStatus,places.googleMapsUri,places.location',
+    }
+    try:
+        resp = await _http_client.post(
+            PLACES_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=PLACES_VERIFY_TIMEOUT,
+        )
+        data   = resp.json()
+        places = data.get('places', [])
+        if not places:
+            logger.info('Places API: no result for %r', query[:60])
+            return _unverified
+
+        place           = places[0]
+        business_status = place.get('businessStatus', STATUS_UNVERIFIED)
+        place_id        = place.get('id')
+        maps_url        = place.get('googleMapsUri')
+        loc             = place.get('location', {})
+        lat             = loc.get('latitude')
+        lng             = loc.get('longitude')
+
+        if business_status not in (STATUS_OPERATIONAL, STATUS_CLOSED_TEMPORARILY, STATUS_CLOSED_PERMANENTLY):
+            business_status = STATUS_UNVERIFIED
+
+        logger.info('Places API: %r → %s (place_id=%s lat=%s lng=%s)',
+                    query[:60], business_status, place_id, lat, lng)
+        return {'status': business_status, 'maps_url': maps_url, 'place_id': place_id,
+                'lat': lat, 'lng': lng}
+
+    except Exception as exc:
+        logger.warning('Places API error for %r: %s', query[:60], exc)
+        return _unverified
+
+
+async def verify_places_batch(items: list, name_key: str, address_key: str, location_context: str):
     """
+    Run Places verification for all items concurrently via asyncio.gather.
+    Attaches _status, _maps_url, _place_id, _lat, _lng to each item.
+    Removes permanently / temporarily closed items.
+    Returns (verified_items, removed_count).
+    """
+    if not items:
+        return items, 0
+
+    results = await asyncio.gather(
+        *[verify_place_with_google(
+              item.get(name_key, ''),
+              item.get(address_key, ''),
+              location_context,
+          ) for item in items],
+        return_exceptions=True,
+    )
+
+    UNAVAILABLE = {STATUS_CLOSED_PERMANENTLY, STATUS_CLOSED_TEMPORARILY}
+    for item, result in zip(items, results):
+        if isinstance(result, Exception):
+            logger.warning('Verification gather error: %s', result)
+            result = {'status': STATUS_UNVERIFIED, 'maps_url': None, 'place_id': None, 'lat': None, 'lng': None}
+        item['_status']   = result['status']
+        item['_maps_url'] = result['maps_url']
+        item['_place_id'] = result['place_id']
+        item['_lat']      = result.get('lat')
+        item['_lng']      = result.get('lng')
+
+    verified = [i for i in items if i.get('_status') not in UNAVAILABLE]
+    removed  = len(items) - len(verified)
+    if removed:
+        perm = sum(1 for i in items if i.get('_status') == STATUS_CLOSED_PERMANENTLY)
+        temp = sum(1 for i in items if i.get('_status') == STATUS_CLOSED_TEMPORARILY)
+        logger.info(
+            'Places verification: removed %d unavailable location(s) from %d candidates '
+            '(%d permanently closed, %d temporarily closed)',
+            removed, len(items), perm, temp,
+        )
+    return verified, removed
+
+
+async def _geocode_accommodation(address: str):
+    """Look up lat/lng of accommodation address via Places API. Returns (lat, lng) or (None, None)."""
+    if not PLACES_VERIFY_ENABLED or not address:
+        return None, None
+    try:
+        resp = await _http_client.post(
+            PLACES_API_URL,
+            json={'textQuery': address, 'maxResultCount': 1},
+            headers={
+                'Content-Type':     'application/json',
+                'X-Goog-Api-Key':   GOOGLE_PLACES_API_KEY,
+                'X-Goog-FieldMask': 'places.location',
+            },
+            timeout=PLACES_VERIFY_TIMEOUT,
+        )
+        places = resp.json().get('places', [])
+        if not places:
+            return None, None
+        loc = places[0].get('location', {})
+        lat, lng = loc.get('latitude'), loc.get('longitude')
+        if lat is not None and lng is not None:
+            logger.info('Accommodation geocoded: %r → (%.5f, %.5f)', address[:60], lat, lng)
+            return float(lat), float(lng)
+    except Exception as exc:
+        logger.warning('Accommodation geocoding failed for %r: %s', address[:60], exc)
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Static map helpers (async)
+# ---------------------------------------------------------------------------
+
+async def _fetch_static_map_as_base64(img_url: str) -> str | None:
+    """Fetch a Google Static Maps image and return it as a base64 data URI."""
+    if not img_url.startswith('https://maps.googleapis.com/'):
+        logger.error('SSRF guard: blocked outbound fetch to unauthorized URL: %s', img_url[:80])
+        return None
+    try:
+        resp         = await _http_client.get(img_url, timeout=8)
+        content_type = resp.headers.get('content-type', 'image/png').split(';')[0].strip()
+        b64          = base64.b64encode(resp.content).decode('ascii')
+        return f'data:{content_type};base64,{b64}'
+    except Exception as exc:
+        logger.warning('Static map fetch failed: %s', exc)
+        return None
+
+
+def _build_static_map_url(day_items: list):
+    """
+    Build (img_url, maps_link, location_list_html) for one day's items.
+    Returns None if there are no verified coordinates.
+    """
+    if not GOOGLE_PLACES_API_KEY or not day_items:
+        return None
+
+    pinned = [
+        (i['_lat'], i['_lng'], i.get('name', ''))
+        for i in day_items
+        if i.get('_lat') is not None and i.get('_lng') is not None
+    ]
+
+    all_names = [i.get('name', '') for i in day_items if i.get('name')]
+    location_list_html = (
+        '<ol class="day-map-print-list">'
+        + ''.join(f'<li>{escape(n)}</li>' for n in all_names)
+        + '</ol>'
+    ) if all_names else ''
+
+    if not pinned:
+        return None
+
+    labels       = '123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    marker_parts = []
+    for idx, (lat, lng, _) in enumerate(pinned):
+        label = labels[idx] if idx < len(labels) else 'X'
+        marker_parts.append(f'color:red|label:{label}|{lat},{lng}')
+
+    zoom       = 15 if len(pinned) == 1 else (14 if len(pinned) <= 3 else 13)
+    params_str = urllib.parse.urlencode({'size': '900x380', 'scale': '2', 'zoom': zoom, 'key': GOOGLE_PLACES_API_KEY})
+    for mp in marker_parts:
+        params_str += '&markers=' + urllib.parse.quote(mp, safe='')
+    img_url = f'https://maps.googleapis.com/maps/api/staticmap?{params_str}'
+
+    all_coords = '|'.join(f'{lat},{lng}' for lat, lng, _ in pinned)
+    maps_link  = escape(
+        'https://www.google.com/maps/search/?'
+        + urllib.parse.urlencode({'api': '1', 'query': all_coords})
+    )
+    return img_url, maps_link, location_list_html
+
+
+async def prefetch_day_maps(sections_by_day: dict) -> dict:
+    """
+    Pre-fetch all static map images concurrently via asyncio.gather.
+
+    sections_by_day: { map_key: day_items_list }
+    Returns: { map_key: (data_uri_or_None, maps_link, location_list_html) }
+    """
+    url_map = {}
+    for key, day_items in sections_by_day.items():
+        result = _build_static_map_url(day_items)
+        if result:
+            url_map[key] = result
+
+    if not url_map:
+        return {}
+
+    async def _fetch_one(key, img_url, maps_link, location_list_html):
+        data_uri = await _fetch_static_map_as_base64(img_url)
+        return key, data_uri, maps_link, location_list_html
+
+    raw_results = await asyncio.gather(
+        *[_fetch_one(k, img_url, maps_link, loc_list)
+          for k, (img_url, maps_link, loc_list) in url_map.items()],
+        return_exceptions=True,
+    )
+
+    fetched = {}
+    for r in raw_results:
+        if isinstance(r, Exception):
+            logger.warning('Map prefetch error: %s', r)
+            continue
+        key, data_uri, maps_link, location_list_html = r
+        fetched[key] = (data_uri, maps_link, location_list_html)
+
+    logger.info('Prefetched %d/%d day map images', sum(1 for v in fetched.values() if v[0]), len(url_map))
+    return fetched
+
+
+# ---------------------------------------------------------------------------
+# Scout functions (async)
+# ---------------------------------------------------------------------------
+
+async def call_photo_scout(location, duration, interests, distance, per_day=None,
+                            accommodation=None, pre_planned=None, client_profile=None):
+    """Call Claude asynchronously to generate photography locations."""
     if per_day is None:
         per_day = PHOTOS_PER_DAY
-    key = _cache_key("photo", location, duration, interests, distance, per_day,
+    key = _cache_key('photo', location, duration, interests, distance, per_day,
                      accommodation, pre_planned,
                      json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
-        logger.info("Photo Scout: cache hit for %s", location)
+        logger.info('Photo Scout: cache hit for %s', location)
         return key, cached
 
     count = duration * per_day
 
-    # ── Build contextual blocks ──────────────────────────────────────────────
     accommodation_block = (
-        f"- Accommodation / travel base: {accommodation}\n"
-        f"  Distance and logistics notes must be calculated from this address, not the city centre.\n"
+        f'- Accommodation / travel base: {accommodation}\n'
+        f'  Distance and logistics notes must be calculated from this address, not the city centre.\n'
         if accommodation else
-        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
     )
-
     pre_planned_block = (
-        f"Already planned / committed:\n  {pre_planned}\n"
-        f"  Do NOT suggest anything that duplicates or conflicts with the above.\n"
-        if pre_planned else ""
+        f'Already planned / committed:\n  {pre_planned}\n'
+        f'  Do NOT suggest anything that duplicates or conflicts with the above.\n'
+        if pre_planned else ''
     )
-
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -678,14 +628,13 @@ def call_photo_scout(location, duration, interests, distance, per_day=None,
     if profile.get('home_city'):
         profile_lines.append(f"  Home city: {profile['home_city']} — avoid suggesting things they can easily do at home")
     if profile.get('dietary_requirements'):
-        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — respect these if any location involves food (e.g. café stops, food markets)")
+        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — respect these if any location involves food")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
-
     client_block = (
-        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        'Client profile:\n' + '\n'.join(profile_lines) + '\n'
         if profile_lines else
-        "Client profile: none provided — give broadly appealing recommendations.\n"
+        'Client profile: none provided — give broadly appealing recommendations.\n'
     )
 
     system_prompt = f"""You are a photography location scout writing practical, no-nonsense shooting guides.
@@ -740,58 +689,46 @@ Trip details:
 {client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
-    message = anthropic_client.messages.create(
+    message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=6000,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
+        messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    locations = _parse_json_lines(message.content[0].text, "Photo Scout")
-    logger.info("Photo Scout: parsed %d/%d locations for %s", len(locations), count, location)
-    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
-    # Places verification so cached results always include _lat/_lng coordinates.
+    locations = _parse_json_lines(message.content[0].text, 'Photo Scout')
+    logger.info('Photo Scout: parsed %d/%d locations for %s', len(locations), count, location)
     return key, locations
 
 
-def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
-                          accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude to generate restaurant recommendations.
-
-    accommodation:  optional hotel/address string — travel origin for distance advice.
-    pre_planned:    optional free-text — already-booked or must-see items the client
-                    has committed to; scouts avoid duplicating these.
-    client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, dietary_requirements, notes.
-    """
+async def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
+                                 accommodation=None, pre_planned=None, client_profile=None):
+    """Call Claude asynchronously to generate restaurant recommendations."""
     if per_day is None:
         per_day = RESTAURANTS_PER_DAY
-    key = _cache_key("restaurant", location, duration, cuisines, budget, distance, per_day,
+    key = _cache_key('restaurant', location, duration, cuisines, budget, distance, per_day,
                      accommodation, pre_planned,
                      json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
-        logger.info("Restaurant Scout: cache hit for %s", location)
+        logger.info('Restaurant Scout: cache hit for %s', location)
         return key, cached
 
     count = duration * per_day
 
-    # ── Build contextual blocks ──────────────────────────────────────────────
     accommodation_block = (
-        f"- Accommodation / travel base: {accommodation}\n"
-        f"  Distance notes must be calculated from this address, not the city centre.\n"
+        f'- Accommodation / travel base: {accommodation}\n'
+        f'  Distance notes must be calculated from this address, not the city centre.\n'
         if accommodation else
-        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
     )
-
     pre_planned_block = (
-        f"Already planned / committed:\n  {pre_planned}\n"
-        f"  Do NOT suggest any restaurant that duplicates or conflicts with the above.\n"
-        f"  If a meal slot is clearly covered by a pre-planned event, skip that slot rather than\n"
-        f"  adding a competing recommendation.\n"
-        if pre_planned else ""
+        f'Already planned / committed:\n  {pre_planned}\n'
+        f'  Do NOT suggest any restaurant that duplicates or conflicts with the above.\n'
+        f'  If a meal slot is clearly covered by a pre-planned event, skip that slot rather than\n'
+        f'  adding a competing recommendation.\n'
+        if pre_planned else ''
     )
-
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -804,11 +741,10 @@ def call_restaurant_scout(location, duration, cuisines, budget, distance, per_da
         profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — HARD CONSTRAINT. Never suggest a restaurant or dish that conflicts with these. Verify menu compatibility before recommending.")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
-
     client_block = (
-        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        'Client profile:\n' + '\n'.join(profile_lines) + '\n'
         if profile_lines else
-        "Client profile: none provided — give broadly appealing recommendations.\n"
+        'Client profile: none provided — give broadly appealing recommendations.\n'
     )
 
     system_prompt = f"""You are a dining guide writer producing clear, honest restaurant recommendations
@@ -874,59 +810,47 @@ Trip details:
 {client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
-    message = anthropic_client.messages.create(
+    message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
+        messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    restaurants = _parse_json_lines(message.content[0].text, "Restaurant Scout")
-    logger.info("Restaurant Scout: parsed %d/%d restaurants for %s", len(restaurants), count, location)
-    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
-    # Places verification so cached results always include _lat/_lng coordinates.
+    restaurants = _parse_json_lines(message.content[0].text, 'Restaurant Scout')
+    logger.info('Restaurant Scout: parsed %d/%d restaurants for %s', len(restaurants), count, location)
     return key, restaurants
 
 
-def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
-                          accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude to generate attractions with location details.
-
-    accommodation:  optional hotel/address string — travel origin for distance advice.
-    pre_planned:    optional free-text — already-booked or must-see items the client
-                    has committed to; scouts avoid duplicating these.
-    client_profile: optional dict with keys home_city, preferred_budget,
-                    travel_style, dietary_requirements, notes.
-    """
+async def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
+                                 accommodation=None, pre_planned=None, client_profile=None):
+    """Call Claude asynchronously to generate attraction recommendations."""
     if per_day is None:
         per_day = ATTRACTIONS_PER_DAY
-    key = _cache_key("attraction", location, duration, categories, budget, distance, per_day,
+    key = _cache_key('attraction', location, duration, categories, budget, distance, per_day,
                      accommodation, pre_planned,
                      json.dumps(client_profile or {}, sort_keys=True))
     cached = _get_cached(key)
     if cached is not None:
-        logger.info("Attraction Scout: cache hit for %s", location)
+        logger.info('Attraction Scout: cache hit for %s', location)
         return key, cached
 
     count = duration * per_day
 
-    # ── Build contextual blocks ──────────────────────────────────────────────
     accommodation_block = (
-        f"- Accommodation / travel base: {accommodation}\n"
-        f"  Group each day's attractions geographically so the client isn't backtracking.\n"
-        f"  Distance and travel time must be calculated from this address, not the city centre.\n"
+        f'- Accommodation / travel base: {accommodation}\n'
+        f'  Group each day\'s attractions geographically so the client isn\'t backtracking.\n'
+        f'  Distance and travel time must be calculated from this address, not the city centre.\n'
         if accommodation else
-        "- Accommodation: not specified — use city centre as the assumed travel base.\n"
+        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
     )
-
     pre_planned_block = (
-        f"Already planned / committed:\n  {pre_planned}\n"
-        f"  Do NOT suggest anything that duplicates or conflicts with the above.\n"
-        f"  If a time slot is already committed, plan around it — suggest complementary nearby\n"
-        f"  stops rather than competing alternatives for the same slot.\n"
-        if pre_planned else ""
+        f'Already planned / committed:\n  {pre_planned}\n'
+        f'  Do NOT suggest anything that duplicates or conflicts with the above.\n'
+        f'  If a time slot is already committed, plan around it — suggest complementary nearby\n'
+        f'  stops rather than competing alternatives for the same slot.\n'
+        if pre_planned else ''
     )
-
     profile = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
@@ -936,14 +860,13 @@ def call_attraction_scout(location, duration, categories, budget, distance, per_
     if profile.get('home_city'):
         profile_lines.append(f"  Home city: {profile['home_city']} — skip attractions that are similar to what they have at home; favour experiences genuinely unique to {location}")
     if profile.get('dietary_requirements'):
-        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — if any attraction involves food (food markets, cooking classes, winery tours), ensure it is compatible")
+        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — if any attraction involves food, ensure it is compatible")
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
-
     client_block = (
-        "Client profile:\n" + "\n".join(profile_lines) + "\n"
+        'Client profile:\n' + '\n'.join(profile_lines) + '\n'
         if profile_lines else
-        "Client profile: none provided — give broadly appealing recommendations.\n"
+        'Client profile: none provided — give broadly appealing recommendations.\n'
     )
 
     system_prompt = """You are a travel writer producing practical sightseeing recommendations
@@ -1008,22 +931,41 @@ Trip details:
 {client_block}
 Provide {count} complete JSON objects, one per line. No markdown, no other text."""
 
-    message = anthropic_client.messages.create(
+    message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
+        messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    attractions = _parse_json_lines(message.content[0].text, "Attraction Scout")
-    logger.info("Attraction Scout: parsed %d/%d attractions for %s", len(attractions), count, location)
-    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
-    # Places verification so cached results always include _lat/_lng coordinates.
+    attractions = _parse_json_lines(message.content[0].text, 'Attraction Scout')
+    logger.info('Attraction Scout: parsed %d/%d attractions for %s', len(attractions), count, location)
     return key, attractions
 
 
+async def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=None):
+    """
+    Call one async scout function, run Places verification, apply haversine distances,
+    and cache the verified results. Returns a list (may be empty).
+
+    Caching happens AFTER verification so cached items always include _lat/_lng
+    coordinates required for map pin rendering.
+    """
+    scout_cache_key, items = await fn(*args, **kwargs)
+    if items and PLACES_VERIFY_ENABLED:
+        items, _ = await verify_places_batch(items, 'name', 'address', location)
+    if items and accommodation_coords and accommodation_coords[0] is not None:
+        _apply_distances(items, accommodation_coords[0], accommodation_coords[1])
+    if items and scout_cache_key:
+        _set_cached(scout_cache_key, items)
+    return items
+
+
+# ---------------------------------------------------------------------------
+# HTML generation helpers (sync — called via run_in_threadpool)
+# ---------------------------------------------------------------------------
+
 def create_google_maps_link(name, address, coordinates):
-    """Create a Google Maps link from location data"""
     if coordinates and ',' in str(coordinates):
         return f"https://www.google.com/maps/search/{coordinates.replace(' ', '')}"
     elif address:
@@ -1033,93 +975,20 @@ def create_google_maps_link(name, address, coordinates):
 
 
 def _e(value, fallback='N/A'):
-    """HTML-escape a string value from untrusted API data."""
     return escape(str(value)) if value else fallback
 
 
-def _fetch_static_map_as_base64(img_url):
-    """
-    Fetch a Google Static Maps image and return it as a base64 data URI string.
-    Returns None on any error or if the URL fails the domain whitelist check.
-
-    Security: strictly validates the URL before making any outbound request to
-    prevent Server-Side Request Forgery (SSRF).  An attacker who can influence
-    the URL could otherwise redirect the server to fetch internal metadata
-    endpoints (e.g. http://169.254.169.254) or internal services.
-    """
-    # SSRF guard — only ever fetch from the Google Static Maps API over HTTPS.
-    if not img_url.startswith('https://maps.googleapis.com/'):
-        logger.error("SSRF guard: blocked outbound fetch to unauthorized URL: %s", img_url[:80])
-        return None
-    try:
-        req = urllib.request.Request(img_url, headers={'User-Agent': 'TripGuideApp/1.0'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            raw = resp.read()
-            content_type = resp.headers.get('Content-Type', 'image/png').split(';')[0].strip()
-        b64 = base64.b64encode(raw).decode('ascii')
-        return f"data:{content_type};base64,{b64}"
-    except Exception as exc:
-        logger.warning("Static map fetch failed: %s", exc)
-        return None
-
-
-def _build_static_map_url(day_items):
-    """
-    Given a list of items for one day, return (img_url, maps_link, location_list_html)
-    or None if there are no verified coordinates.
-
-    img_url      — Static Maps API URL (not yet fetched)
-    maps_link    — Google Maps deep-link with all pins
-    location_list_html — fallback numbered list as HTML
-    """
-    if not GOOGLE_PLACES_API_KEY or not day_items:
-        return None
-
-    pinned = [
-        (i['_lat'], i['_lng'], i.get('name', ''))
-        for i in day_items
-        if i.get('_lat') is not None and i.get('_lng') is not None
-    ]
-
-    all_names = [i.get('name', '') for i in day_items if i.get('name')]
-    location_list_html = (
-        '<ol class="day-map-print-list">'
-        + ''.join(f'<li>{escape(n)}</li>' for n in all_names)
-        + '</ol>'
-    ) if all_names else ''
-
-    if not pinned:
-        return None
-
-    labels = '123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    marker_parts = []
-    for idx, (lat, lng, _) in enumerate(pinned):
-        label = labels[idx] if idx < len(labels) else 'X'
-        marker_parts.append(f"color:red|label:{label}|{lat},{lng}")
-
-    zoom = 15 if len(pinned) == 1 else (14 if len(pinned) <= 3 else 13)
-    params_str = urllib.parse.urlencode({
-        'size': '900x380', 'scale': '2', 'zoom': zoom, 'key': GOOGLE_PLACES_API_KEY,
-    })
-    for mp in marker_parts:
-        params_str += '&markers=' + urllib.parse.quote(mp, safe='')
-
-    img_url = f"https://maps.googleapis.com/maps/api/staticmap?{params_str}"
-
-    all_coords = '|'.join(f"{lat},{lng}" for lat, lng, _ in pinned)
-    maps_link = escape(
-        "https://www.google.com/maps/search/?"
-        + urllib.parse.urlencode({'api': '1', 'query': all_coords})
-    )
-
-    return img_url, maps_link, location_list_html
+def _verification_badge_html(item):
+    status        = item.get('_status')
+    confirmed_url = item.get('_maps_url')
+    if status == STATUS_OPERATIONAL:
+        badge = '<span class="verify-badge verified">✓ Verified Open</span>'
+    else:
+        badge = '<span class="verify-badge unverified">Unverified — confirm before visiting</span>'
+    return badge, '', confirmed_url
 
 
 def build_day_map_html(data_uri, maps_link, location_list_html):
-    """
-    Given a pre-fetched base64 data_uri (or None), build the map HTML snippet.
-    Falls back to the location list if no image is available.
-    """
     if data_uri:
         return (
             f'<a href="{maps_link}" target="_blank" rel="noopener" '
@@ -1132,109 +1001,28 @@ def build_day_map_html(data_uri, maps_link, location_list_html):
     return location_list_html
 
 
-def prefetch_day_maps(sections_by_day):
-    """
-    Pre-fetch all static map images in parallel.
-
-    sections_by_day: dict of { map_key: day_items_list }
-      where map_key is any hashable identifier (e.g. ('photos', 1))
-
-    Returns: dict of { map_key: (data_uri_or_None, maps_link, location_list_html) }
-
-    Thread safety note: the worker closure only performs external HTTP I/O
-    (_fetch_static_map_as_base64).  If you ever add Flask current_app access or
-    SQLAlchemy DB calls inside this closure, push an app context first:
-        with app.app_context():
-            ...db work...
-    Failure to do so with multiple Gunicorn workers will cause silent RuntimeErrors.
-    """
-    # Build URLs first (pure computation, no I/O)
-    url_map = {}  # map_key -> (img_url, maps_link, location_list_html)
-    for key, day_items in sections_by_day.items():
-        result = _build_static_map_url(day_items)
-        if result:
-            url_map[key] = result
-
-    if not url_map:
-        return {}
-
-    # Fetch all images in parallel.
-    # _with_app_context ensures each thread has a Flask app context for any
-    # future additions (DB lookups, current_app.config access, etc.).
-    fetched = {}
-    def _fetch(key, img_url, maps_link, location_list_html):
-        data_uri = _fetch_static_map_as_base64(img_url)
-        return key, data_uri, maps_link, location_list_html
-
-    with ThreadPoolExecutor(max_workers=min(8, len(url_map))) as executor:
-        futures = [
-            executor.submit(_with_app_context, _fetch, k, img_url, maps_link, loc_list)
-            for k, (img_url, maps_link, loc_list) in url_map.items()
-        ]
-        for future in as_completed(futures):
-            try:
-                key, data_uri, maps_link, location_list_html = future.result()
-                fetched[key] = (data_uri, maps_link, location_list_html)
-            except Exception as exc:
-                logger.warning("Map prefetch error: %s", exc)
-
-    logger.info("Prefetched %d/%d day map images", sum(1 for v in fetched.values() if v[0]), len(url_map))
-    return fetched
-
-
-def _verification_badge_html(item):
-    """Return the badge HTML and best maps URL for a verified item.
-
-    Only OPERATIONAL and UNVERIFIED items reach this point — temporarily and
-    permanently closed items are filtered out in verify_places_batch before
-    HTML generation, so we don't need to handle those states here.
-    """
-    status = item.get('_status')
-    confirmed_url = item.get('_maps_url')
-
-    if status == STATUS_OPERATIONAL:
-        badge = '<span class="verify-badge verified">✓ Verified Open</span>'
-    else:
-        # UNVERIFIED or any unexpected state — neutral prompt
-        badge = '<span class="verify-badge unverified">Unverified — confirm before visiting</span>'
-
-    return badge, '', confirmed_url
-
-
 def generate_master_html(location, duration, photos, restaurants, attractions, colors, prefetched_maps=None):
-    """Generate unified HTML master document — Editorial theme.
-    Sections with empty lists are omitted entirely; section numbers are
-    assigned dynamically (I, II, III) based on what's present."""
+    """Generate unified HTML master document — Editorial theme."""
 
-    safe_location = escape(location)
+    safe_location  = escape(location)
     generated_date = datetime.now().strftime('%B %d, %Y')
+    city_name      = escape(location.split(',')[0].strip())
 
-    # Derive a readable city name for the cover (strip country suffix)
-    city_name = escape(location.split(',')[0].strip())
-
-    # Determine which sections to render and their roman numeral index
-    roman = ['I', 'II', 'III']
+    roman          = ['I', 'II', 'III']
     active_sections = []
-    if photos:
-        active_sections.append('photos')
-    if restaurants:
-        active_sections.append('restaurants')
-    if attractions:
-        active_sections.append('attractions')
+    if photos:      active_sections.append('photos')
+    if restaurants: active_sections.append('restaurants')
+    if attractions: active_sections.append('attractions')
 
-    # Build a dynamic cover footer text and cover dek
-    section_names = {
-        'photos': 'Photography',
-        'restaurants': 'Dining',
-        'attractions': 'Attractions',
-    }
+    section_names      = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}
     cover_footer_sections = ' &middot; '.join(section_names[s] for s in active_sections) or 'Custom Guide'
     cover_dek_parts = []
     if photos:       cover_dek_parts.append('photography locations')
     if restaurants:  cover_dek_parts.append('dining recommendations')
     if attractions:  cover_dek_parts.append('attractions worth seeking out')
     cover_dek_text = ', '.join(cover_dek_parts[:-1]) + (
-        f' and {cover_dek_parts[-1]}' if len(cover_dek_parts) > 1 else (cover_dek_parts[0] if cover_dek_parts else 'highlights')
+        f' and {cover_dek_parts[-1]}' if len(cover_dek_parts) > 1
+        else (cover_dek_parts[0] if cover_dek_parts else 'highlights')
     )
 
     html = f"""<!DOCTYPE html>
@@ -1398,7 +1186,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             overflow: hidden;
         }}
 
-        /* Compass SVG decoration */
         .cover-visual svg {{
             width: 55%;
             opacity: 0.18;
@@ -1457,8 +1244,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             color: var(--rule);
             line-height: 1;
         }}
-
-        .section-title-group {{}}
 
         .section-title {{
             font-family: 'Playfair Display', serif;
@@ -1673,7 +1458,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             gap: 8px;
         }}
 
-        /* Text fallback list when no map image is available */
         .day-map-print-list {{
             margin: 0;
             padding: 10px 16px 12px 36px;
@@ -1686,7 +1470,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
         }}
 
         @media print {{
-            /* Map image is a base64 data URI — no external fetch needed, prints cleanly */
             .day-map {{
                 margin: 6px 0 20px;
                 break-inside: avoid;
@@ -1699,7 +1482,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                 object-fit: cover;
                 display: block;
             }}
-            /* Hide the hover "Open in Google Maps" badge in print */
             .day-map a::after {{
                 display: none;
             }}
@@ -1833,8 +1615,7 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
 
 """
 
-    # ── Build each active section ──
-    section_idx = 0  # 0-based index into roman numerals
+    section_idx = 0
 
     # ── PHOTOGRAPHY ──
     if photos:
@@ -1850,7 +1631,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             </div>
         </div>
 """
-        # Group photos by day for per-day map embeds
         photos_by_day = defaultdict(list)
         for photo in photos:
             photos_by_day[photo.get('day', 1)].append(photo)
@@ -1863,9 +1643,8 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             <div class="day-divider-rule"></div>
         </div>"""
 
-            # Embed the per-day pinned locations map (pre-fetched, no inline HTTP)
             _map_data = (prefetched_maps or {}).get(('photos', day_num))
-            map_img = build_day_map_html(*_map_data) if _map_data else ''
+            map_img   = build_day_map_html(*_map_data) if _map_data else ''
             if map_img:
                 count_label = f"{len(day_photos)} location{'s' if len(day_photos) != 1 else ''}"
                 html += f"""
@@ -1879,20 +1658,16 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
 
             for photo in day_photos:
                 fallback_maps_url = create_google_maps_link(
-                    photo.get('name', ''),
-                    photo.get('address', ''),
-                    photo.get('coordinates', '')
-                )
+                    photo.get('name', ''), photo.get('address', ''), photo.get('coordinates', ''))
                 badge, notice, confirmed_url = _verification_badge_html(photo)
-                maps_url = escape(confirmed_url or fallback_maps_url)
-                card_class = 'item-card'
-                travel_time = photo.get('travel_time', '')
-                travel_time_html = (
+                maps_url     = escape(confirmed_url or fallback_maps_url)
+                travel_time  = photo.get('travel_time', '')
+                travel_html  = (
                     f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
                     f'<span class="meta-value">{_e(travel_time)}</span></div>'
                 ) if travel_time and travel_time.upper() != 'N/A' else ''
                 html += f"""
-        <div class="{card_class}">
+        <div class="item-card">
             <div class="item-card-head">
                 <h3 class="item-card-title">{_e(photo.get('name'), 'Location')}</h3>
                 <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
@@ -1910,7 +1685,7 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                         <span class="meta-label">Camera Setup</span>
                         <span class="meta-value">{_e(photo.get('setup'))}</span>
                     </div>
-                    {travel_time_html}
+                    {travel_html}
                 </div>
                 <div class="meta-cell">
                     <span class="meta-label">Light &amp; Conditions</span>
@@ -1954,18 +1729,14 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
         </div>"""
 
             fallback_maps_url = create_google_maps_link(
-                restaurant.get('name', ''),
-                restaurant.get('address', ''),
-                ''
-            )
+                restaurant.get('name', ''), restaurant.get('address', ''), '')
             badge, notice, confirmed_url = _verification_badge_html(restaurant)
-            maps_url = escape(confirmed_url or fallback_maps_url)
-            card_class = 'item-card'
-            meal  = _e(restaurant.get('meal_type'), '').title()
-            price = _e(restaurant.get('price'), '')
-            r_travel_time  = restaurant.get('travel_time', '')
-            r_why_client   = restaurant.get('why_this_client', '')
-            r_travel_html  = (
+            maps_url      = escape(confirmed_url or fallback_maps_url)
+            meal          = _e(restaurant.get('meal_type'), '').title()
+            price         = _e(restaurant.get('price'), '')
+            r_travel_time = restaurant.get('travel_time', '')
+            r_why_client  = restaurant.get('why_this_client', '')
+            r_travel_html = (
                 f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
                 f'<span class="meta-value">{_e(r_travel_time)}</span></div>'
             ) if r_travel_time and r_travel_time.upper() != 'N/A' else ''
@@ -1975,7 +1746,7 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                 f'{_e(r_why_client)}</div>'
             ) if r_why_client else ''
             html += f"""
-        <div class="{card_class}">
+        <div class="item-card">
             <div class="item-card-head">
                 <h3 class="item-card-title">{_e(restaurant.get('name'), 'Restaurant')}</h3>
                 <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
@@ -2035,7 +1806,6 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             </div>
         </div>
 """
-        # Group attractions by day for per-day map embeds
         attractions_by_day = defaultdict(list)
         for attraction in attractions:
             attractions_by_day[attraction.get('day', 1)].append(attraction)
@@ -2048,9 +1818,8 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
             <div class="day-divider-rule"></div>
         </div>"""
 
-            # Embed the per-day pinned locations map (pre-fetched, no inline HTTP)
             _map_data = (prefetched_maps or {}).get(('attractions', day_num))
-            map_img = build_day_map_html(*_map_data) if _map_data else ''
+            map_img   = build_day_map_html(*_map_data) if _map_data else ''
             if map_img:
                 count_label = f"{len(day_attractions)} stop{'s' if len(day_attractions) != 1 else ''}"
                 html += f"""
@@ -2064,13 +1833,9 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
 
             for attraction in day_attractions:
                 fallback_maps_url = create_google_maps_link(
-                    attraction.get('name', ''),
-                    attraction.get('address', ''),
-                    ''
-                )
+                    attraction.get('name', ''), attraction.get('address', ''), '')
                 badge, notice, confirmed_url = _verification_badge_html(attraction)
-                maps_url = escape(confirmed_url or fallback_maps_url)
-                card_class = 'item-card'
+                maps_url      = escape(confirmed_url or fallback_maps_url)
                 a_travel_time = attraction.get('travel_time', '')
                 a_why_client  = attraction.get('why_this_client', '')
                 a_travel_html = (
@@ -2083,7 +1848,7 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
                     f'{_e(a_why_client)}</div>'
                 ) if a_why_client else ''
                 html += f"""
-        <div class="{card_class}">
+        <div class="item-card">
             <div class="item-card-head">
                 <h3 class="item-card-title">{_e(attraction.get('name'), 'Attraction')}</h3>
                 <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">
@@ -2149,177 +1914,79 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
     return html
 
 
-def _with_app_context(fn, *args, **kwargs):
-    """
-    Run fn inside a fresh Flask application context, then return its result.
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-    This wrapper is used when submitting work to a ThreadPoolExecutor.  Each
-    thread needs its own independent AppContext — sharing a single AppContext
-    object across threads is NOT safe.  We capture the module-level `app`
-    object (which IS thread-safe) and let each invocation open its own context.
-
-    Currently our thread workers only do HTTP I/O and don't need Flask context,
-    but wrapping them now means any future developer who adds current_app access
-    or SQLAlchemy calls inside a worker won't hit a silent RuntimeError.
-    """
-    with app.app_context():
-        return fn(*args, **kwargs)
+@app.get('/')
+async def index():
+    return FileResponse(os.path.join(BASE_DIR, 'index.html'))
 
 
-def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=None):
-    """
-    Call one scout function and, when Google Places verification is enabled,
-    immediately verify the returned items and filter out closed places.
-
-    Combining the scout call and Places verification into one step lets the
-    retry loop in /generate treat "scout returned items but Places wiped them
-    all" the same as "scout returned nothing" — both cases result in an empty
-    list that triggers a retry.
-
-    If accommodation_coords is a (lat, lng) tuple, haversine distances are
-    computed from that point to each verified item and written into travel_time.
-    Unverified items (no _lat/_lng) keep the Claude-generated text estimate.
-
-    If cache_key is provided, verified (non-empty) results are stored in the
-    cache so subsequent cache hits always include _lat/_lng coordinates.
-    Caching intentionally happens here — AFTER verification — so cached items
-    always carry the Places-verified coordinates needed for map pins.
-
-    Raises on API/network errors so the caller can catch and decide whether to
-    retry.  Returns a list that may be empty if the scout produced no parseable
-    results or all results were filtered out by Places.
-    """
-    # Scouts return (cache_key, items) so we can cache AFTER verification
-    scout_cache_key, items = fn(*args, **kwargs)
-    if items and PLACES_VERIFY_ENABLED:
-        items, _ = verify_places_batch(items, 'name', 'address', location)
-    if items and accommodation_coords and accommodation_coords[0] is not None:
-        _apply_distances(items, accommodation_coords[0], accommodation_coords[1])
-    # Cache verified results (non-empty only — empty results should always retry fresh)
-    if items and scout_cache_key:
-        _set_cached(scout_cache_key, items)
-    return items
+@app.get('/health')
+async def health():
+    return {'status': 'ok', 'message': f'Trip Guide API is running on {SCOUT_MODEL_LABEL}'}
 
 
-@app.route('/', methods=['GET'])
-def index():
-    """Serve the frontend single-page app."""
-    return send_from_directory(os.path.dirname(__file__), 'index.html')
-
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({"status": "ok", "message": f"Trip Guide API is running on {SCOUT_MODEL_LABEL}"})
-
-
-@app.route('/generate', methods=['POST'])
-@require_auth
-def generate_trip_guide():
-    """Generate complete trip guide (requires login)."""
+@app.post('/generate')
+async def generate_trip_guide(
+    body: GenerateRequest,
+    request: Request,
+    db_session: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """Generate a complete trip guide (requires login)."""
     try:
-        # Per-user rate limit — checked before any expensive work
-        allowed, retry_after = check_user_rate_limit(g.current_user.id, 'generate')
+        # Per-user rate limit
+        allowed, retry_after = check_user_rate_limit(current_user.id, 'generate')
         if not allowed:
-            logger.warning("Rate limit hit: user_id=%d /generate retry_after=%ds",
-                           g.current_user.id, retry_after)
-            return jsonify({
-                'error': f'Too many requests. Please wait {retry_after} seconds before trying again.'
-            }), 429
+            logger.warning('Rate limit hit: user_id=%d /generate retry_after=%ds',
+                           current_user.id, retry_after)
+            raise HTTPException(
+                status_code=429,
+                detail=f'Too many requests. Please wait {retry_after} seconds before trying again.',
+            )
 
-        data = request.json
+        location      = body.location
+        duration      = body.duration
+        budget        = body.budget or 'Moderate'
+        distance      = body.distance or 'Up to 30 minutes'
+        accommodation = body.accommodation
+        pre_planned   = body.pre_planned
 
-        # Validate required base fields
-        required_fields = ['location', 'duration', 'budget', 'distance']
-        if not all(field in data for field in required_fields):
-            return jsonify({"error": "Missing required fields"}), 400
+        include_photos      = body.include_photos
+        include_dining      = body.include_dining
+        include_attractions = body.include_attractions
 
-        # Validate and sanitize location (single-line — collapse whitespace)
-        location = _sanitise_line(data['location'], MAX_LOCATION_LENGTH)
-        if not location:
-            return jsonify({"error": "Location cannot be empty"}), 400
-        if len(location) > MAX_LOCATION_LENGTH:
-            return jsonify({"error": f"Location must be {MAX_LOCATION_LENGTH} characters or fewer"}), 400
+        photos_per_day      = body.photos_per_day
+        restaurants_per_day = body.restaurants_per_day
+        attractions_per_day = body.attractions_per_day
 
-        # Validate duration
-        try:
-            duration = int(data['duration'])
-        except (ValueError, TypeError):
-            return jsonify({"error": "Duration must be a number"}), 400
-        if not (MIN_DURATION <= duration <= MAX_DURATION):
-            return jsonify({"error": f"Duration must be between {MIN_DURATION} and {MAX_DURATION} days"}), 400
+        photo_interests = body.photo_interests or ''
+        cuisines        = body.cuisines        or ''
+        attraction_cats = body.attraction_cats or ''
 
-        # Single-line fields: collapse whitespace + truncate
-        budget        = _sanitise_line(data['budget'],                    MAX_FIELD_SHORT) or 'Moderate'
-        distance      = _sanitise_line(data['distance'],                  MAX_FIELD_SHORT) or 'Up to 30 minutes'
-        accommodation = _sanitise_line(data.get('accommodation', '') or '', MAX_FIELD_SHORT)
-        # pre_planned is multi-line: strip ends only, preserve internal newlines
-        pre_planned   = str(data.get('pre_planned', '') or '').strip()[:MAX_FIELD_MEDIUM] or None
-
-        # Section enable/disable flags — accept both JSON booleans and string "true"/"false"
-        def _parse_bool(val, default=True):
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.lower() not in ('false', '0', 'no', 'off', '')
-            if val is None:
-                return default
-            return bool(val)
-
-        include_photos      = _parse_bool(data.get('include_photos'),      True)
-        include_dining      = _parse_bool(data.get('include_dining'),      True)
-        include_attractions = _parse_bool(data.get('include_attractions'), True)
-
-        if not (include_photos or include_dining or include_attractions):
-            return jsonify({"error": "At least one section must be enabled"}), 400
-
-        # Per-section daily counts — validate and clamp
-        def _parse_count(key, default, min_v, max_v):
-            try:
-                v = int(data.get(key, default))
-                return max(min_v, min(max_v, v))
-            except (ValueError, TypeError):
-                return default
-
-        photos_per_day      = _parse_count('photos_per_day',      PHOTOS_PER_DAY,      1, 10)
-        restaurants_per_day = _parse_count('restaurants_per_day', RESTAURANTS_PER_DAY, 1, 8)
-        attractions_per_day = _parse_count('attractions_per_day', ATTRACTIONS_PER_DAY, 1, 10)
-
-        photo_interests = str(data.get('photo_interests', '')).strip()
-        cuisines        = str(data.get('cuisines',        '')).strip()
-        attractions     = str(data.get('attractions',     '')).strip()
-
-        # ── Load client profile for personalised scouting ────────────────────
-        # If a client_id was supplied, pull the profile fields from the DB so
-        # the scouts can personalise recommendations to this specific traveller.
-        # Failure is non-fatal — scouts work fine without a profile.
+        # ── Load client profile ──────────────────────────────────────────────
         client_profile = None
-        raw_client_id  = data.get('client_id')
-        if raw_client_id is not None:
+        if body.client_id is not None:
             try:
-                from models import Client as _Client
-                cid = int(raw_client_id)
-                db_client = db.session.get(_Client, cid)
+                cid       = int(body.client_id)
+                db_client = await run_in_threadpool(lambda: db_session.get(Client, cid))
                 if db_client and not db_client.is_deleted:
-                    client_profile = {
+                    client_profile = {k: v for k, v in {
                         'home_city':            db_client.home_city            or '',
                         'preferred_budget':     db_client.preferred_budget     or '',
                         'travel_style':         db_client.travel_style         or '',
                         'dietary_requirements': db_client.dietary_requirements or '',
                         'notes':                db_client.notes                or '',
-                    }
-                    # Strip empty strings so prompts don't mention blank fields
-                    client_profile = {k: v for k, v in client_profile.items() if v}
-                    logger.info(
-                        "Client profile loaded for id=%d: %s",
-                        cid, list(client_profile.keys())
-                    )
+                    }.items() if v}
+                    logger.info('Client profile loaded for id=%d: %s', cid, list(client_profile.keys()))
             except Exception as cp_exc:
-                logger.warning("Could not load client profile (id=%s): %s", raw_client_id, cp_exc)
+                logger.warning('Could not load client profile (id=%s): %s', body.client_id, cp_exc)
 
         logger.info(
-            "Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) "
-            "attractions=%s(%d/d) | accommodation=%s | pre_planned=%s | client_profile=%s",
+            'Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) '
+            'attractions=%s(%d/d) | accommodation=%s | pre_planned=%s | client_profile=%s',
             location, duration,
             'ON' if include_photos else 'OFF', photos_per_day,
             'ON' if include_dining else 'OFF', restaurants_per_day,
@@ -2329,147 +1996,105 @@ def generate_trip_guide():
             'yes' if client_profile else 'no',
         )
 
-        # Build scout tasks — ONLY for sections the user explicitly enabled
+        # ── Build scout task list ────────────────────────────────────────────
         scout_tasks = {}
         if include_photos:
             scout_tasks['photos'] = (
                 call_photo_scout,
                 (location, duration, photo_interests, distance),
-                {'per_day': photos_per_day,
-                 'accommodation': accommodation,
-                 'pre_planned':   pre_planned,
-                 'client_profile': client_profile}
+                {'per_day': photos_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
             )
         if include_dining:
             scout_tasks['restaurants'] = (
                 call_restaurant_scout,
                 (location, duration, cuisines, budget, distance),
-                {'per_day': restaurants_per_day,
-                 'accommodation': accommodation,
-                 'pre_planned':   pre_planned,
-                 'client_profile': client_profile}
+                {'per_day': restaurants_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
             )
         if include_attractions:
             scout_tasks['attractions'] = (
                 call_attraction_scout,
-                (location, duration, attractions, budget, distance),
-                {'per_day': attractions_per_day,
-                 'accommodation': accommodation,
-                 'pre_planned':   pre_planned,
-                 'client_profile': client_profile}
+                (location, duration, attraction_cats, budget, distance),
+                {'per_day': attractions_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
             )
-        logger.info("Active scout tasks: %s", list(scout_tasks.keys()))
+        logger.info('Active scout tasks: %s', list(scout_tasks.keys()))
 
-        # ── Geocode accommodation for distance calculations ─────────────────
-        # If the consultant supplied a hotel / address, look it up once via the
-        # Places API to get coordinates.  _run_single_scout then computes a
-        # straight-line (haversine) distance from those coordinates to each
-        # verified item and writes it into the travel_time field.  This is
-        # intentionally an approximation — it does not require the Distance
-        # Matrix API and uses no additional quota beyond the Places key already
-        # in use for venue verification.
-        accommodation_coords = (None, None)
+        # ── Geocode accommodation ────────────────────────────────────────────
+        accommodation_coords: tuple = (None, None)
         if accommodation and PLACES_VERIFY_ENABLED:
-            accommodation_coords = _geocode_accommodation(accommodation)
+            accommodation_coords = await _geocode_accommodation(accommodation)
             if accommodation_coords[0] is not None:
-                logger.info(
-                    "Accommodation geocoded for distance calc: (%.5f, %.5f)",
-                    *accommodation_coords
-                )
+                logger.info('Accommodation geocoded: (%.5f, %.5f)', *accommodation_coords)
             else:
-                logger.info("Accommodation geocoding returned no result — travel_time from Claude")
+                logger.info('Accommodation geocoding returned no result — travel_time from Claude')
 
-        # ── Initial parallel scout run ─────────────────────────────────────
-        # Each future calls _run_single_scout, which runs the Claude scout and
-        # then immediately runs Google Places verification on the results.
-        # Combining both steps means Places wipeouts (all places closed) look
-        # identical to parse failures — both yield [] and trigger a retry.
+        if PLACES_VERIFY_ENABLED:
+            logger.info('Google Places verification enabled — running scout + verify in one step')
+        else:
+            logger.info('Google Places verification disabled (no API key)')
+
+        # ── Initial parallel scout run (asyncio.gather) ──────────────────────
         results = {'photos': [], 'restaurants': [], 'attractions': []}
         errors  = []
 
-        if PLACES_VERIFY_ENABLED:
-            logger.info("Google Places verification enabled — running scout + verify in one step")
-        else:
-            logger.info("Google Places verification disabled (no API key)")
+        raw_results = await asyncio.gather(
+            *[_run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
+              for name, (fn, args, kwargs) in scout_tasks.items()],
+            return_exceptions=True,
+        )
+        for (name, _), result in zip(scout_tasks.items(), raw_results):
+            if isinstance(result, Exception):
+                logger.error("Scout '%s': initial run failed — %s", name, result)
+                errors.append(f'{name}: {result}')
+                results[name] = []
+            else:
+                results[name] = result
+                logger.info("Scout '%s': initial run returned %d item(s)", name, len(result))
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(
-                    _with_app_context, _run_single_scout,
-                    name, fn, args, kwargs, location, accommodation_coords
-                ): name
-                for name, (fn, args, kwargs) in scout_tasks.items()
-            }
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    results[name] = future.result()
-                    logger.info("Scout '%s': initial run returned %d item(s)", name, len(results[name]))
-                except Exception as exc:
-                    logger.error("Scout '%s': initial run failed — %s", name, exc)
-                    errors.append(f"{name}: {exc}")
-                    results[name] = []
-
-        # ── Retry any scout that returned 0 items ─────────────────────────
-        # Empty results are never cached, so each retry always hits the API
-        # fresh. Retries run sequentially (not in parallel) to avoid hammering
-        # the API when one scout is having transient issues.
+        # ── Retry scouts that returned 0 items ───────────────────────────────
         for attempt in range(1, SCOUT_MAX_RETRIES + 1):
             empty_scouts = [name for name in scout_tasks if not results[name]]
             if not empty_scouts:
-                break  # All enabled scouts have results — nothing to retry
+                break
 
-            logger.warning(
-                "Retry attempt %d/%d — scouts with 0 results: %s",
-                attempt, SCOUT_MAX_RETRIES, empty_scouts,
-            )
-            time.sleep(SCOUT_RETRY_DELAY)
+            logger.warning('Retry attempt %d/%d — scouts with 0 results: %s',
+                           attempt, SCOUT_MAX_RETRIES, empty_scouts)
+            await asyncio.sleep(SCOUT_RETRY_DELAY)
 
             for name in empty_scouts:
                 fn, args, kwargs = scout_tasks[name]
                 try:
-                    items = _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
-                    results[name] = items
-                    logger.info(
-                        "Scout '%s': retry %d returned %d item(s)",
-                        name, attempt, len(items),
-                    )
+                    items          = await _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
+                    results[name]  = items
+                    logger.info("Scout '%s': retry %d returned %d item(s)", name, attempt, len(items))
                 except Exception as exc:
                     logger.error("Scout '%s': retry %d failed — %s", name, attempt, exc)
-                    # results[name] stays [] — will appear in warnings below
 
-        # ── Build per-scout warnings for categories still empty after retries ──
+        # ── Warnings for scouts still empty after retries ─────────────────────
         warnings = []
         for name in scout_tasks:
             if not results[name]:
-                label = {
-                    'photos':      'Photography',
-                    'restaurants': 'Dining',
-                    'attractions': 'Attractions',
-                }[name]
+                label = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}[name]
                 warnings.append(
-                    f"{label} recommendations could not be generated for this destination "
-                    f"after {SCOUT_MAX_RETRIES + 1} attempt(s). "
-                    f"You can proceed without this section or try again."
+                    f'{label} recommendations could not be generated for this destination '
+                    f'after {SCOUT_MAX_RETRIES + 1} attempt(s). '
+                    f'You can proceed without this section or try again.'
                 )
-                logger.warning(
-                    "Scout '%s': 0 results after %d attempt(s) — surfacing warning to user",
-                    name, SCOUT_MAX_RETRIES + 1,
-                )
+                logger.warning("Scout '%s': 0 results after %d attempt(s) — surfacing warning",
+                               name, SCOUT_MAX_RETRIES + 1)
 
-        # ── Hard fail only if every enabled scout is still empty ──────────
-        enabled_scouts = list(scout_tasks.keys())
-        if not any(results[n] for n in enabled_scouts):
-            return jsonify({
-                "error":    "No recommendations could be generated. Please try again.",
-                "warnings": warnings,
-            }), 500
+        # Hard fail if every enabled scout is still empty
+        if not any(results[n] for n in scout_tasks):
+            raise HTTPException(
+                status_code=500,
+                detail='No recommendations could be generated. Please try again.',
+            )
 
         colors = get_color_palette(location)
 
-        # ── Store raw results in session for /finalize ──
-        # HTML generation (including slow map image fetches) is deferred until
-        # the user has reviewed and approved their selections.
+        # ── Store session ─────────────────────────────────────────────────────
         _evict_sessions()
         session_id = str(uuid.uuid4())
         _session_set(session_id, {
@@ -2480,150 +2105,135 @@ def generate_trip_guide():
             'restaurants': results['restaurants'],
             'attractions': results['attractions'],
         })
-        logger.info(
-            "Session %s created — %d photos, %d restaurants, %d attractions",
-            session_id[:8], len(results['photos']), len(results['restaurants']), len(results['attractions'])
-        )
+        logger.info('Session %s created — %d photos, %d restaurants, %d attractions',
+                    session_id[:8], len(results['photos']), len(results['restaurants']), len(results['attractions']))
 
-        # ── Persist draft trip to database ──────────────────────────────────
-        # client_id is optional — the frontend passes it when a client is selected.
-        # raw_client_id was already parsed above for profile loading; reuse it.
-        trip_client_id = None
-        if raw_client_id is not None:
-            try:
-                trip_client_id = int(raw_client_id)
-            except (ValueError, TypeError):
-                pass
-
+        # ── Save draft trip to DB ─────────────────────────────────────────────
+        trip_client_id = body.client_id
+        trip_id        = None
         try:
-            trip = Trip(
-                client_id            = trip_client_id,
-                created_by_id        = g.current_user.id,
-                title                = f"{location} — {duration} day{'s' if duration != 1 else ''}",
-                status               = 'draft',
-                location             = location,
-                duration             = duration,
-                budget               = budget,
-                distance             = distance,
-                include_photos       = include_photos,
-                include_dining       = include_dining,
-                include_attractions  = include_attractions,
-                photos_per_day       = photos_per_day,
-                restaurants_per_day  = restaurants_per_day,
-                attractions_per_day  = attractions_per_day,
-                photo_interests      = photo_interests or None,
-                cuisines             = cuisines or None,
-                attraction_cats      = attractions or None,
-                accommodation        = accommodation,
-                raw_photos           = json.dumps(results['photos']),
-                raw_restaurants      = json.dumps(results['restaurants']),
-                raw_attractions      = json.dumps(results['attractions']),
-                colors               = json.dumps(colors),
-                session_id           = session_id,
-            )
-            db.session.add(trip)
-            db.session.commit()
-            trip_id = trip.id
-            logger.info("Trip draft saved: id=%d session=%s", trip_id, session_id[:8])
+            def _save_trip():
+                trip = Trip(
+                    client_id            = trip_client_id,
+                    created_by_id        = current_user.id,
+                    title                = f"{location} — {duration} day{'s' if duration != 1 else ''}",
+                    status               = 'draft',
+                    location             = location,
+                    duration             = duration,
+                    budget               = budget,
+                    distance             = distance,
+                    include_photos       = include_photos,
+                    include_dining       = include_dining,
+                    include_attractions  = include_attractions,
+                    photos_per_day       = photos_per_day,
+                    restaurants_per_day  = restaurants_per_day,
+                    attractions_per_day  = attractions_per_day,
+                    photo_interests      = photo_interests or None,
+                    cuisines             = cuisines or None,
+                    attraction_cats      = attraction_cats or None,
+                    accommodation        = accommodation,
+                    raw_photos           = json.dumps(results['photos']),
+                    raw_restaurants      = json.dumps(results['restaurants']),
+                    raw_attractions      = json.dumps(results['attractions']),
+                    colors               = json.dumps(colors),
+                    session_id           = session_id,
+                )
+                db_session.add(trip)
+                db_session.commit()
+                db_session.refresh(trip)
+                return trip.id
+
+            trip_id = await run_in_threadpool(_save_trip)
+            logger.info('Trip draft saved: id=%d session=%s', trip_id, session_id[:8])
         except Exception as db_exc:
-            # DB failure is non-fatal — the review flow still works via session store
-            logger.error("Failed to save trip draft to DB: %s", db_exc)
-            trip_id = None
+            logger.error('Failed to save trip draft to DB: %s', db_exc)
 
-        return jsonify({
-            "status":           "success",
-            "session_id":       session_id,
-            "trip_id":          trip_id,       # DB record id (None if DB failed)
-            "location":         location,
-            "duration":         duration,
-            "colors":           colors,
-            "photos":           results['photos'],
-            "restaurants":      results['restaurants'],
-            "attractions":      results['attractions'],
-            "photo_count":      len(results['photos']),
-            "restaurant_count": len(results['restaurants']),
-            "attraction_count": len(results['attractions']),
-            "warnings":         warnings,      # [] on full success; non-empty if any scout failed
-            "model":            SCOUT_MODEL_LABEL
-        })
+        return {
+            'status':           'success',
+            'session_id':       session_id,
+            'trip_id':          trip_id,
+            'location':         location,
+            'duration':         duration,
+            'colors':           colors,
+            'photos':           results['photos'],
+            'restaurants':      results['restaurants'],
+            'attractions':      results['attractions'],
+            'photo_count':      len(results['photos']),
+            'restaurant_count': len(results['restaurants']),
+            'attraction_count': len(results['attractions']),
+            'warnings':         warnings,
+            'model':            SCOUT_MODEL_LABEL,
+        }
 
-    except Exception as e:
-        logger.error("Unhandled error in /generate: %s", e, exc_info=True)
-        # Return a generic message — never expose internal exception text to clients
-        return jsonify({"error": "An unexpected error occurred. Please try again."}), 500
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Unhandled error in /generate: %s', exc, exc_info=True)
+        raise HTTPException(status_code=500, detail='An unexpected error occurred. Please try again.')
 
 
-@app.route('/finalize', methods=['POST'])
-@require_auth
-def finalize_guide():
-    """
-    Take a session_id and arrays of approved item indices.
-    Filter the stored raw items to approved only, run map pre-fetch,
-    generate the final HTML guide, and return it. Requires login.
-
-    Session resolution order:
-      1. In-memory _session_store (fast path — same process/worker)
-      2. Trip DB record matched by session_id (multi-worker safe fallback)
-    This means /finalize works correctly even when running under Gunicorn
-    with multiple workers, where the request may land on a different worker
-    than the one that handled /generate.
-    """
+@app.post('/finalize')
+async def finalize_guide(
+    body: FinalizeRequest,
+    request: Request,
+    db_session: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """Filter approved items, prefetch maps, generate final HTML. Requires login."""
     try:
         _evict_sessions()
+        session_id = body.session_id.strip()
 
-        data = request.get_json(force=True)
-        session_id = str(data.get('session_id', '')).strip()
-
-        # ── Resolve session: Redis/memory first, DB fallback ──────────────
+        # ── Resolve session: Redis/memory first, DB fallback ──────────────────
         _sess = _session_get(session_id) if session_id else None
         if _sess:
-            location    = _sess['location']
-            duration    = _sess['duration']
-            colors      = _sess['colors']
-            all_photos  = _sess['photos']
-            all_rests   = _sess['restaurants']
-            all_attrs   = _sess['attractions']
-            logger.info("Finalize: session %s resolved from store", session_id[:8])
+            location   = _sess['location']
+            duration   = _sess['duration']
+            colors     = _sess['colors']
+            all_photos = _sess['photos']
+            all_rests  = _sess['restaurants']
+            all_attrs  = _sess['attractions']
+            logger.info('Finalize: session %s resolved from store', session_id[:8])
         elif session_id:
-            # Memory miss — try to reconstruct from the saved Trip record.
-            db_trip = Trip.query.filter_by(session_id=session_id, is_deleted=False).first()
+            db_trip = await run_in_threadpool(
+                lambda: db_session.query(Trip).filter_by(session_id=session_id, is_deleted=False).first()
+            )
             if not db_trip:
-                return jsonify({
-                    "error": "Session expired — please click Start Over to generate a new guide."
-                }), 404
-            location    = db_trip.location
-            duration    = db_trip.duration
-            colors      = json.loads(db_trip.colors)    if db_trip.colors           else {}
-            all_photos  = json.loads(db_trip.raw_photos)      if db_trip.raw_photos      else []
-            all_rests   = json.loads(db_trip.raw_restaurants) if db_trip.raw_restaurants else []
-            all_attrs   = json.loads(db_trip.raw_attractions) if db_trip.raw_attractions else []
-            logger.info("Finalize: session %s resolved from DB (trip id=%d)", session_id[:8], db_trip.id)
+                raise HTTPException(
+                    status_code=404,
+                    detail='Session expired — please click Start Over to generate a new guide.',
+                )
+            location   = db_trip.location
+            duration   = db_trip.duration
+            colors     = json.loads(db_trip.colors)           if db_trip.colors           else {}
+            all_photos = json.loads(db_trip.raw_photos)       if db_trip.raw_photos       else []
+            all_rests  = json.loads(db_trip.raw_restaurants)  if db_trip.raw_restaurants  else []
+            all_attrs  = json.loads(db_trip.raw_attractions)  if db_trip.raw_attractions  else []
+            logger.info('Finalize: session %s resolved from DB (trip id=%d)', session_id[:8], db_trip.id)
         else:
-            return jsonify({
-                "error": "Session expired — please click Start Over to generate a new guide."
-            }), 404
+            raise HTTPException(
+                status_code=404,
+                detail='Session expired — please click Start Over to generate a new guide.',
+            )
 
-        # Parse approved index arrays — default to all if not provided
-        def _parse_indices(key, total):
-            raw = data.get(key)
+        # ── Parse approved index arrays ───────────────────────────────────────
+        def _parse_indices(raw, total):
             if raw is None:
                 return list(range(total))
             return [int(i) for i in raw if 0 <= int(i) < total]
 
-        approved_photo_idx = _parse_indices('approved_photos',      len(all_photos))
-        approved_rest_idx  = _parse_indices('approved_restaurants',  len(all_rests))
-        approved_attr_idx  = _parse_indices('approved_attractions',  len(all_attrs))
+        approved_photo_idx = _parse_indices(body.approved_photos,      len(all_photos))
+        approved_rest_idx  = _parse_indices(body.approved_restaurants,  len(all_rests))
+        approved_attr_idx  = _parse_indices(body.approved_attractions,  len(all_attrs))
 
         photos      = [all_photos[i] for i in approved_photo_idx]
         restaurants = [all_rests[i]  for i in approved_rest_idx]
         attractions = [all_attrs[i]  for i in approved_attr_idx]
 
-        logger.info(
-            "Finalizing session %s — approved: %d photos, %d restaurants, %d attractions",
-            session_id[:8], len(photos), len(restaurants), len(attractions)
-        )
+        logger.info('Finalizing session %s — approved: %d photos, %d restaurants, %d attractions',
+                    session_id[:8], len(photos), len(restaurants), len(attractions))
 
-        # Pre-fetch map images for approved items only
+        # ── Pre-fetch map images (async) ──────────────────────────────────────
         prefetched_maps = {}
         if PLACES_VERIFY_ENABLED:
             sections_by_day = {}
@@ -2634,121 +2244,101 @@ def finalize_guide():
                 for day_num, day_items in by_day.items():
                     sections_by_day[(section, day_num)] = day_items
             if sections_by_day:
-                logger.info("Pre-fetching %d day map image(s) for final guide...", len(sections_by_day))
-                prefetched_maps = prefetch_day_maps(sections_by_day)
+                logger.info('Pre-fetching %d day map image(s)...', len(sections_by_day))
+                prefetched_maps = await prefetch_day_maps(sections_by_day)
 
-        logger.info("Generating final HTML...")
-        html_content = generate_master_html(
+        # ── Generate HTML (CPU-bound sync — run in threadpool) ───────────────
+        logger.info('Generating final HTML...')
+        html_content = await run_in_threadpool(
+            generate_master_html,
             location, duration, photos, restaurants, attractions,
-            colors, prefetched_maps=prefetched_maps
+            colors, prefetched_maps,
         )
 
-        # ── Update trip record to 'finalized' ────────────────────────────────
-        trip_id = data.get('trip_id')
-        if trip_id is not None:
+        # ── Update trip record to 'finalized' ─────────────────────────────────
+        if body.trip_id is not None:
             try:
-                saved_trip = db.session.get(Trip, int(trip_id))
-                if saved_trip and not saved_trip.is_deleted:
-                    saved_trip.status                      = 'finalized'
-                    saved_trip.approved_photo_indices      = json.dumps(approved_photo_idx)
-                    saved_trip.approved_restaurant_indices = json.dumps(approved_rest_idx)
-                    saved_trip.approved_attraction_indices = json.dumps(approved_attr_idx)
-                    saved_trip.final_html                  = html_content
-                    saved_trip.updated_at                  = datetime.now(timezone.utc)
-                    db.session.commit()
-                    logger.info("Trip finalized in DB: id=%d", saved_trip.id)
+                def _finalize_trip():
+                    saved_trip = db_session.get(Trip, int(body.trip_id))
+                    if saved_trip and not saved_trip.is_deleted:
+                        saved_trip.status                      = 'finalized'
+                        saved_trip.approved_photo_indices      = json.dumps(approved_photo_idx)
+                        saved_trip.approved_restaurant_indices = json.dumps(approved_rest_idx)
+                        saved_trip.approved_attraction_indices = json.dumps(approved_attr_idx)
+                        saved_trip.final_html                  = html_content
+                        saved_trip.updated_at                  = datetime.now(timezone.utc)
+                        db_session.commit()
+                        logger.info('Trip finalized in DB: id=%d', saved_trip.id)
+
+                await run_in_threadpool(_finalize_trip)
             except Exception as db_exc:
-                logger.error("Failed to finalize trip in DB: %s", db_exc)
+                logger.error('Failed to finalize trip in DB: %s', db_exc)
 
-        return jsonify({
-            "status":           "success",
-            "html":             html_content,
-            "location":         location,
-            "duration":         duration,
-            "photo_count":      len(photos),
-            "restaurant_count": len(restaurants),
-            "attraction_count": len(attractions),
-            "model":            SCOUT_MODEL_LABEL
-        })
+        return {
+            'status':           'success',
+            'html':             html_content,
+            'location':         location,
+            'duration':         duration,
+            'photo_count':      len(photos),
+            'restaurant_count': len(restaurants),
+            'attraction_count': len(attractions),
+            'model':            SCOUT_MODEL_LABEL,
+        }
 
-    except Exception as e:
-        logger.error("Unhandled error in /finalize: %s", e, exc_info=True)
-        # Return a generic message — never expose internal exception text to clients
-        return jsonify({"error": "An unexpected error occurred. Please try again."}), 500
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Unhandled error in /finalize: %s', exc, exc_info=True)
+        raise HTTPException(status_code=500, detail='An unexpected error occurred. Please try again.')
 
 
-@app.route('/replace', methods=['POST'])
-@require_auth
-def replace_item():
-    """
-    Replace a single item in the review screen with an alternative.
-
-    The endpoint reconstructs the original scout parameters from the saved Trip
-    record, runs a focused single-item scout that explicitly excludes all current
-    items by name, and returns the single best alternative.
-
-    Request body:
-        session_id    — str, the active review session
-        trip_id       — int|null, the DB trip record
-        type          — 'photos' | 'restaurants' | 'attractions'
-        index         — int, position of the item to replace (used for DB update)
-        day           — int, day number the item belongs to
-        meal_type     — str|null, 'breakfast'|'lunch'|'dinner' (restaurants only)
-        exclude_names — list[str], names of all current items to avoid
-
-    Returns:
-        { "item": { ...scout item dict... } }
-    """
+@app.post('/replace')
+async def replace_item(
+    body: ReplaceRequest,
+    request: Request,
+    db_session: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """Replace a single review-screen item with an alternative. Requires login."""
     try:
-        # Per-user rate limit — checked before any expensive work
-        allowed, retry_after = check_user_rate_limit(g.current_user.id, 'replace')
+        # Per-user rate limit
+        allowed, retry_after = check_user_rate_limit(current_user.id, 'replace')
         if not allowed:
-            logger.warning("Rate limit hit: user_id=%d /replace retry_after=%ds",
-                           g.current_user.id, retry_after)
-            return jsonify({
-                'error': f'Too many requests. Please wait {retry_after} seconds before trying again.'
-            }), 429
+            logger.warning('Rate limit hit: user_id=%d /replace retry_after=%ds',
+                           current_user.id, retry_after)
+            raise HTTPException(
+                status_code=429,
+                detail=f'Too many requests. Please wait {retry_after} seconds before trying again.',
+            )
 
-        data       = request.get_json(force=True) or {}
-        session_id = str(data.get('session_id', '')).strip()
-        trip_id    = data.get('trip_id')
-        item_type  = str(data.get('type', '')).strip()
-        item_idx   = int(data.get('index', 0))
-        day        = int(data.get('day', 1))
-        meal_type  = data.get('meal_type') or None
-        # exclude_names is rebuilt server-side from the DB trip's raw_* arrays
-        # so the client cannot inject arbitrary text via this field.
-        # The client-supplied list is only used as a fallback for in-memory-only
-        # sessions (no DB trip), where we still sanitise each entry.
-        _client_excludes = (data.get('exclude_names') or [])
+        session_id = body.session_id.strip()
+        item_type  = body.type
+        item_idx   = body.index
+        day        = body.day
+        meal_type  = body.meal_type
+        _client_excludes = body.exclude_names or []
 
-        if item_type not in ('photos', 'restaurants', 'attractions'):
-            return jsonify({'error': 'Invalid type'}), 400
-
-        # ── Resolve scout parameters from DB trip ──────────────────────────
-        # We need location, budget, distance, interests/cuisines/categories
-        # to run a coherent replacement scout.
+        # ── Resolve scout parameters from DB trip ─────────────────────────────
         location = budget = distance = None
         interests = cuisines_str = categories = ''
         duration  = 1
 
         db_trip = None
-        if trip_id is not None:
-            try:
-                db_trip = db.session.get(Trip, int(trip_id))
-            except Exception:
-                pass
+        if body.trip_id is not None:
+            db_trip = await run_in_threadpool(lambda: db_session.get(Trip, int(body.trip_id)))
         if db_trip is None and session_id:
-            db_trip = Trip.query.filter_by(session_id=session_id, is_deleted=False).first()
+            db_trip = await run_in_threadpool(
+                lambda: db_session.query(Trip).filter_by(session_id=session_id, is_deleted=False).first()
+            )
 
         if db_trip:
-            location   = db_trip.location
-            duration   = db_trip.duration
-            budget     = db_trip.budget     or 'Moderate'
-            distance   = db_trip.distance   or 'Up to 30 minutes'
-            interests  = db_trip.photo_interests  or ''
-            cuisines_str = db_trip.cuisines or ''
-            categories = db_trip.attraction_cats  or ''
+            location     = db_trip.location
+            duration     = db_trip.duration
+            budget       = db_trip.budget     or 'Moderate'
+            distance     = db_trip.distance   or 'Up to 30 minutes'
+            interests    = db_trip.photo_interests  or ''
+            cuisines_str = db_trip.cuisines         or ''
+            categories   = db_trip.attraction_cats  or ''
         elif session_id:
             sess = _session_get(session_id)
             if sess:
@@ -2757,20 +2347,15 @@ def replace_item():
                 budget   = 'Moderate'
                 distance = 'Up to 30 minutes'
             else:
-                return jsonify({'error': 'Session not found — please start over.'}), 404
+                raise HTTPException(status_code=404, detail='Session not found — please start over.')
         else:
-            return jsonify({'error': 'Session not found — please start over.'}), 404
+            raise HTTPException(status_code=404, detail='Session not found — please start over.')
 
         if not location:
-            return jsonify({'error': 'Could not resolve trip location.'}), 400
+            raise HTTPException(status_code=400, detail='Could not resolve trip location.')
 
-        # ── Build exclude_names from server-side data ───────────────────────
-        # If we have a DB trip, extract item names from the stored raw_* JSON
-        # so the exclusion list is entirely server-controlled (no client input).
-        # Fall back to the sanitised client-supplied list only for in-memory
-        # sessions that have no DB record (rare: DB unavailable at generate time).
+        # ── Build exclude_names from server-side DB data ──────────────────────
         def _names_from_raw(raw_json: str | None) -> list[str]:
-            """Extract 'name' field from each item in a raw_* JSON array."""
             if not raw_json:
                 return []
             try:
@@ -2780,24 +2365,25 @@ def replace_item():
                 return []
 
         if db_trip:
-            raw_col = {'photos': db_trip.raw_photos,
-                       'restaurants': db_trip.raw_restaurants,
-                       'attractions': db_trip.raw_attractions}.get(item_type)
+            raw_col = {
+                'photos':      db_trip.raw_photos,
+                'restaurants': db_trip.raw_restaurants,
+                'attractions': db_trip.raw_attractions,
+            }.get(item_type)
             exclude_names = _names_from_raw(raw_col)
         else:
-            # In-memory session fallback — sanitise client-supplied names
             exclude_names = [
                 s for s in (
-                    _sanitise_line(n, MAX_EXCLUDE_NAME_LEN) for n in _client_excludes if n
+                    re.sub(r'\s+', ' ', str(n)).strip()[:MAX_EXCLUDE_NAME_LEN]
+                    for n in _client_excludes if n
                 ) if s
             ][:MAX_EXCLUDE_LIST_LEN]
 
-        # ── Load client profile if trip has one ────────────────────────────
+        # ── Load client profile ───────────────────────────────────────────────
         client_profile = None
         if db_trip and db_trip.client_id:
             try:
-                from models import Client as _Client
-                db_client = db.session.get(_Client, db_trip.client_id)
+                db_client = await run_in_threadpool(lambda: db_session.get(Client, db_trip.client_id))
                 if db_client and not db_client.is_deleted:
                     client_profile = {k: v for k, v in {
                         'home_city':            db_client.home_city            or '',
@@ -2807,16 +2393,16 @@ def replace_item():
                         'notes':                db_client.notes                or '',
                     }.items() if v}
             except Exception as cp_exc:
-                logger.warning("Replace: could not load client profile: %s", cp_exc)
+                logger.warning('Replace: could not load client profile: %s', cp_exc)
 
-        # ── Build an exclusion-aware prompt for a single replacement item ──
+        # ── Build prompt ──────────────────────────────────────────────────────
         exclude_block = (
-            "IMPORTANT — Do NOT suggest any of the following (already in the guide):\n"
-            + "\n".join(f"  - {n}" for n in exclude_names)
-            + "\n"
-        ) if exclude_names else ""
+            'IMPORTANT — Do NOT suggest any of the following (already in the guide):\n'
+            + '\n'.join(f'  - {n}' for n in exclude_names)
+            + '\n'
+        ) if exclude_names else ''
 
-        day_context = f"Day {day} of a {duration}-day trip."
+        day_context = f'Day {day} of a {duration}-day trip.'
 
         if item_type == 'photos':
             system_prompt = """You are a photography location scout.
@@ -2842,11 +2428,10 @@ Photography interests: {interests or 'general'}
 Budget: {budget} | Travel radius: {distance}"""
 
         elif item_type == 'restaurants':
-            meal_hint = f"This should be a {meal_type} option." if meal_type else ""
-            diet_hint = ""
+            meal_hint = f'This should be a {meal_type} option.' if meal_type else ''
+            diet_hint = ''
             if client_profile and client_profile.get('dietary_requirements'):
                 diet_hint = f"DIETARY HARD CONSTRAINT — never suggest anything incompatible with: {client_profile['dietary_requirements']}"
-
             system_prompt = f"""You are a dining guide writer.
 Find ONE real restaurant that has NOT already been suggested.
 {diet_hint}
@@ -2902,103 +2487,95 @@ Context: {day_context}
 Attraction interests: {categories or 'general sightseeing'}
 Budget: {budget} | Travel radius: {distance}"""
 
-        logger.info(
-            "Replace: type=%s idx=%d day=%d location=%s excluded=%d",
-            item_type, item_idx, day, location, len(exclude_names)
-        )
+        logger.info('Replace: type=%s idx=%d day=%d location=%s excluded=%d',
+                    item_type, item_idx, day, location, len(exclude_names))
 
-        message = anthropic_client.messages.create(
+        message = await anthropic_client.messages.create(
             model=SCOUT_MODEL,
             max_tokens=1200,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
+            messages=[{'role': 'user', 'content': user_prompt}],
         )
-        # Extract text from the first text-type content block
+
         raw_text = ''
         for block in message.content:
             block_text = getattr(block, 'text', None)
-            if block_text is not None:
+            if block_text:
                 raw_text = str(block_text).strip()
-                if raw_text:
-                    break
+                break
 
-        # Strip markdown code fences if the model wrapped the output (e.g. ```json ... ```)
+        # Strip markdown code fences
         if raw_text.startswith('```'):
-            # split('```', 2) → ['', '<lang>\n<content>\n', ''] — take middle part
-            parts = raw_text.split('```', 2)
-            inner = parts[1] if len(parts) >= 2 else raw_text
+            parts    = raw_text.split('```', 2)
+            inner    = parts[1] if len(parts) >= 2 else raw_text
             if inner.startswith('json'):
                 inner = inner[4:]
             raw_text = inner.strip()
 
-        # Parse the single returned JSON object
-        items = _parse_json_lines(raw_text, "Replace Scout")
+        items = _parse_json_lines(raw_text, 'Replace Scout')
         if not items:
-            # Try bare json.loads for pretty-printed (multi-line) objects
             try:
                 items = [json.loads(raw_text)]
             except Exception:
                 pass
 
         if not items:
-            logger.warning("Replace Scout: failed to parse response for %s idx=%d", item_type, item_idx)
-            return jsonify({'error': 'Could not find an alternative. Try again or toggle this item off.'}), 422
+            logger.warning('Replace Scout: failed to parse response for %s idx=%d', item_type, item_idx)
+            raise HTTPException(
+                status_code=422,
+                detail='Could not find an alternative. Try again or toggle this item off.',
+            )
 
         new_item = items[0]
 
-        # ── Run Google Places verification on the replacement ──────────────
+        # ── Places verification ───────────────────────────────────────────────
         if PLACES_VERIFY_ENABLED:
-            verified, _ = verify_places_batch([new_item], 'name', 'address', location)
+            verified, _ = await verify_places_batch([new_item], 'name', 'address', location)
             if verified:
                 new_item = verified[0]
-            # If Places returns nothing the item is still usable — just unverified
 
-        # ── Apply haversine distance from accommodation if available ────────
+        # ── Apply haversine distance if accommodation available ───────────────
         if db_trip and db_trip.accommodation and PLACES_VERIFY_ENABLED:
-            acc_lat, acc_lng = _geocode_accommodation(db_trip.accommodation)
+            acc_lat, acc_lng = await _geocode_accommodation(db_trip.accommodation)
             if acc_lat is not None:
                 _apply_distances([new_item], acc_lat, acc_lng)
 
-        # ── Update the raw item in the DB trip record ──────────────────────
+        # ── Update DB trip record ─────────────────────────────────────────────
         if db_trip:
             try:
-                arr_field = {
-                    'photos':      'raw_photos',
-                    'restaurants': 'raw_restaurants',
-                    'attractions': 'raw_attractions',
-                }[item_type]
-                raw_arr = json.loads(getattr(db_trip, arr_field) or '[]')
-                if item_idx < len(raw_arr):
-                    raw_arr[item_idx] = new_item
-                    setattr(db_trip, arr_field, json.dumps(raw_arr))
-                    db_trip.updated_at = datetime.now(timezone.utc)
-                    db.session.commit()
-                    logger.info("Replace: DB trip %d updated — %s[%d] replaced", db_trip.id, item_type, item_idx)
-            except Exception as db_exc:
-                logger.error("Replace: DB update failed: %s", db_exc)
+                def _update_db():
+                    arr_field = {
+                        'photos':      'raw_photos',
+                        'restaurants': 'raw_restaurants',
+                        'attractions': 'raw_attractions',
+                    }[item_type]
+                    raw_arr = json.loads(getattr(db_trip, arr_field) or '[]')
+                    if item_idx < len(raw_arr):
+                        raw_arr[item_idx] = new_item
+                        setattr(db_trip, arr_field, json.dumps(raw_arr))
+                        db_trip.updated_at = datetime.now(timezone.utc)
+                        db_session.commit()
+                        logger.info('Replace: DB trip %d updated — %s[%d] replaced',
+                                    db_trip.id, item_type, item_idx)
 
-        # ── Update the session store if still alive ────────────────────────
+                await run_in_threadpool(_update_db)
+            except Exception as db_exc:
+                logger.error('Replace: DB update failed: %s', db_exc)
+
+        # ── Update session store ──────────────────────────────────────────────
         if session_id:
             sess = _session_get(session_id)
             if sess:
                 sess_arr = sess.get(item_type, [])
                 if item_idx < len(sess_arr):
                     sess_arr[item_idx] = new_item
-                    sess[item_type] = sess_arr
+                    sess[item_type]    = sess_arr
                     _session_set(session_id, sess)
 
-        return jsonify({'item': new_item})
+        return {'item': new_item}
 
-    except Exception as e:
-        logger.error("Unhandled error in /replace: %s", e, exc_info=True)
-        return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
-
-
-if __name__ == '__main__':
-    print("Trip Master API - Local Development")
-    print("=" * 50)
-    print(f"Model: {SCOUT_MODEL_LABEL} ({SCOUT_MODEL})")
-    print("Backend running on: http://localhost:5001")
-    print("Open frontend: http://localhost:5000")
-    print("=" * 50)
-    app.run(debug=False, port=5001, host='0.0.0.0')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('Unhandled error in /replace: %s', exc, exc_info=True)
+        raise HTTPException(status_code=500, detail='An unexpected error occurred. Please try again.')

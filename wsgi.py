@@ -1,16 +1,8 @@
 """
-wsgi.py — WSGI entry point for production servers (Gunicorn, uWSGI, etc.)
+wsgi.py — stub re-export for tooling compatibility.
 
-Usage:
-  gunicorn wsgi:application
-  gunicorn --config gunicorn.conf.py wsgi:application
-
-The app object is imported here so that:
-  1. The module name is stable regardless of how the server is invoked.
-  2. app.py can still be run directly during development (`python app.py`).
+Gunicorn UvicornWorker is now invoked directly via app:app in the Procfile.
+This file is kept so any tool or script that imports wsgi still works.
 """
 
-from app import app as application  # noqa: F401  (Gunicorn looks for 'application')
-
-if __name__ == '__main__':
-    application.run()
+from app import app  # noqa: F401

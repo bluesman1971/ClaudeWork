@@ -12,14 +12,25 @@ app will use that instead — no code changes required.
 """
 
 from datetime import datetime, timezone
-from flask_sqlalchemy import SQLAlchemy
+
+from sqlalchemy import (
+    Boolean, Column, DateTime, ForeignKey, Integer, String, Text,
+)
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 
 def _utcnow():
-    """Return the current UTC time as a timezone-aware datetime (replaces deprecated _utcnow)."""
+    """Return the current UTC time as a timezone-aware datetime."""
     return datetime.now(timezone.utc)
 
-db = SQLAlchemy()
+
+class _Base(DeclarativeBase):
+    pass
+
+
+# db is kept as a module-level name so external imports (database.py, manage.py)
+# can reference db.metadata for table creation.  db.Model is the mapped base class.
+db = _Base()
 
 
 # ---------------------------------------------------------------------------
@@ -29,20 +40,20 @@ db = SQLAlchemy()
 class StaffUser(db.Model):
     __tablename__ = 'staff_users'
 
-    id            = db.Column(db.Integer, primary_key=True)
-    email         = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    full_name     = db.Column(db.String(255), nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.String(20), nullable=False, default='staff')   # 'admin' | 'staff'
-    is_active     = db.Column(db.Boolean, nullable=False, default=True)
-    created_at    = db.Column(db.DateTime, nullable=False, default=_utcnow)
-    last_login_at = db.Column(db.DateTime, nullable=True)
+    id            = Column(Integer, primary_key=True)
+    email         = Column(String(255), unique=True, nullable=False, index=True)
+    full_name     = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role          = Column(String(20), nullable=False, default='staff')   # 'admin' | 'staff'
+    is_active     = Column(Boolean, nullable=False, default=True)
+    created_at    = Column(DateTime, nullable=False, default=_utcnow)
+    last_login_at = Column(DateTime, nullable=True)
 
     # Relationships
-    clients_created = db.relationship('Client', foreign_keys='Client.created_by_id',
-                                      backref='created_by', lazy='dynamic')
-    trips_created   = db.relationship('Trip',   foreign_keys='Trip.created_by_id',
-                                      backref='created_by', lazy='dynamic')
+    clients_created = relationship('Client', foreign_keys='Client.created_by_id',
+                                   backref='created_by', lazy='dynamic')
+    trips_created   = relationship('Trip',   foreign_keys='Trip.created_by_id',
+                                   backref='created_by', lazy='dynamic')
 
     def to_dict(self):
         return {
@@ -66,27 +77,27 @@ class StaffUser(db.Model):
 class Client(db.Model):
     __tablename__ = 'clients'
 
-    id               = db.Column(db.Integer, primary_key=True)
-    reference_code   = db.Column(db.String(20), unique=True, nullable=False, index=True)
-    name             = db.Column(db.String(255), nullable=False)
-    email            = db.Column(db.String(255), nullable=True)
-    phone            = db.Column(db.String(50),  nullable=True)
-    company          = db.Column(db.String(255), nullable=True)
-    home_city        = db.Column(db.String(255), nullable=True)
-    preferred_budget = db.Column(db.String(50),  nullable=True)  # e.g. 'budget', 'moderate', 'luxury'
-    travel_style          = db.Column(db.String(255), nullable=True)  # free-text tags / sentence
-    dietary_requirements  = db.Column(db.Text,        nullable=True)  # e.g. 'vegetarian, nut allergy'
-    notes                 = db.Column(db.Text,        nullable=True)
-    tags                  = db.Column(db.String(500), nullable=True)  # comma-separated labels
-    created_by_id    = db.Column(db.Integer, db.ForeignKey('staff_users.id'), nullable=True)
-    is_deleted       = db.Column(db.Boolean, nullable=False, default=False)  # soft-delete
-    created_at       = db.Column(db.DateTime, nullable=False, default=_utcnow)
-    updated_at       = db.Column(db.DateTime, nullable=False, default=_utcnow,
-                                 onupdate=_utcnow)
+    id               = Column(Integer, primary_key=True)
+    reference_code   = Column(String(20), unique=True, nullable=False, index=True)
+    name             = Column(String(255), nullable=False)
+    email            = Column(String(255), nullable=True)
+    phone            = Column(String(50),  nullable=True)
+    company          = Column(String(255), nullable=True)
+    home_city        = Column(String(255), nullable=True)
+    preferred_budget = Column(String(50),  nullable=True)  # e.g. 'budget', 'moderate', 'luxury'
+    travel_style          = Column(String(255), nullable=True)  # free-text tags / sentence
+    dietary_requirements  = Column(Text,        nullable=True)  # e.g. 'vegetarian, nut allergy'
+    notes                 = Column(Text,        nullable=True)
+    tags                  = Column(String(500), nullable=True)  # comma-separated labels
+    created_by_id    = Column(Integer, ForeignKey('staff_users.id'), nullable=True)
+    is_deleted       = Column(Boolean, nullable=False, default=False)  # soft-delete
+    created_at       = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at       = Column(DateTime, nullable=False, default=_utcnow,
+                              onupdate=_utcnow)
 
     # Relationships
-    trips = db.relationship('Trip', backref='client', lazy='dynamic',
-                            foreign_keys='Trip.client_id')
+    trips = relationship('Trip', backref='client', lazy='dynamic',
+                         foreign_keys='Trip.client_id')
 
     def to_dict(self, include_trips=False):
         d = {
@@ -123,49 +134,48 @@ class Client(db.Model):
 class Trip(db.Model):
     __tablename__ = 'trips'
 
-    id           = db.Column(db.Integer, primary_key=True)
-    client_id    = db.Column(db.Integer, db.ForeignKey('clients.id'), nullable=True, index=True)
-    created_by_id = db.Column(db.Integer, db.ForeignKey('staff_users.id'), nullable=True)
+    id            = Column(Integer, primary_key=True)
+    client_id     = Column(Integer, ForeignKey('clients.id'), nullable=True, index=True)
+    created_by_id = Column(Integer, ForeignKey('staff_users.id'), nullable=True)
 
-    title        = db.Column(db.String(255), nullable=True)   # auto-generated if blank
-    status       = db.Column(db.String(20),  nullable=False, default='draft')  # 'draft' | 'finalized'
-    is_deleted   = db.Column(db.Boolean, nullable=False, default=False)
-    created_at   = db.Column(db.DateTime, nullable=False, default=_utcnow)
-    updated_at   = db.Column(db.DateTime, nullable=False, default=_utcnow,
-                             onupdate=_utcnow)
+    title      = Column(String(255), nullable=True)   # auto-generated if blank
+    status     = Column(String(20),  nullable=False, default='draft')  # 'draft' | 'finalized'
+    is_deleted = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
     # ── Form parameters ──────────────────────────────────────────────────────
-    location            = db.Column(db.String(255), nullable=False)
-    duration            = db.Column(db.Integer,     nullable=False)
-    budget              = db.Column(db.String(50),  nullable=True)
-    distance            = db.Column(db.String(50),  nullable=True)
-    include_photos      = db.Column(db.Boolean,     default=True)
-    include_dining      = db.Column(db.Boolean,     default=True)
-    include_attractions = db.Column(db.Boolean,     default=True)
-    photos_per_day      = db.Column(db.Integer,     default=3)
-    restaurants_per_day = db.Column(db.Integer,     default=3)
-    attractions_per_day = db.Column(db.Integer,     default=4)
-    photo_interests     = db.Column(db.String(500), nullable=True)
-    cuisines            = db.Column(db.String(500), nullable=True)
-    attraction_cats     = db.Column(db.String(500), nullable=True)
-    accommodation       = db.Column(db.String(500), nullable=True)  # hotel/address used as travel origin
+    location            = Column(String(255), nullable=False)
+    duration            = Column(Integer,     nullable=False)
+    budget              = Column(String(50),  nullable=True)
+    distance            = Column(String(50),  nullable=True)
+    include_photos      = Column(Boolean,     default=True)
+    include_dining      = Column(Boolean,     default=True)
+    include_attractions = Column(Boolean,     default=True)
+    photos_per_day      = Column(Integer,     default=3)
+    restaurants_per_day = Column(Integer,     default=3)
+    attractions_per_day = Column(Integer,     default=4)
+    photo_interests     = Column(String(500), nullable=True)
+    cuisines            = Column(String(500), nullable=True)
+    attraction_cats     = Column(String(500), nullable=True)
+    accommodation       = Column(String(500), nullable=True)  # hotel/address used as travel origin
 
     # ── Raw AI suggestions (full verified item dicts from /generate) ─────────
-    raw_photos      = db.Column(db.Text, nullable=True)   # JSON array
-    raw_restaurants = db.Column(db.Text, nullable=True)
-    raw_attractions = db.Column(db.Text, nullable=True)
+    raw_photos      = Column(Text, nullable=True)   # JSON array
+    raw_restaurants = Column(Text, nullable=True)
+    raw_attractions = Column(Text, nullable=True)
 
     # ── Approved selections (index arrays from /finalize) ───────────────────
-    approved_photo_indices      = db.Column(db.Text, nullable=True)   # JSON [0,2,4,...]
-    approved_restaurant_indices = db.Column(db.Text, nullable=True)
-    approved_attraction_indices = db.Column(db.Text, nullable=True)
+    approved_photo_indices      = Column(Text, nullable=True)   # JSON [0,2,4,...]
+    approved_restaurant_indices = Column(Text, nullable=True)
+    approved_attraction_indices = Column(Text, nullable=True)
 
     # ── Final output ─────────────────────────────────────────────────────────
-    final_html = db.Column(db.Text,        nullable=True)
-    colors     = db.Column(db.String(500), nullable=True)   # JSON color dict
+    final_html = Column(Text,        nullable=True)
+    colors     = Column(String(500), nullable=True)   # JSON color dict
 
     # ── Session linkage ───────────────────────────────────────────────────────
-    session_id = db.Column(db.String(36), nullable=True, index=True)  # UUID from /generate
+    session_id = Column(String(36), nullable=True, index=True)  # UUID from /generate
 
     def to_dict(self, include_html=False):
         import json as _json
