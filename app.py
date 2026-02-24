@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from models import db, Trip
 from auth import auth_bp, require_auth, register_cli, check_user_rate_limit
 from clients import clients_bp
+from redis_client import get_redis
 from trips import trips_bp
 
 # Load .env from the same directory as this file, regardless of working directory
@@ -239,14 +240,17 @@ STATUS_CLOSED_TEMPORARILY  = 'CLOSED_TEMPORARILY'
 STATUS_CLOSED_PERMANENTLY  = 'CLOSED_PERMANENTLY'
 STATUS_UNVERIFIED          = 'UNVERIFIED'
 
-# Simple in-memory cache: key -> (timestamp, result)
-_cache = {}
-CACHE_TTL_SECONDS = 3600  # 1 hour
+# TTLs (seconds) — shared by both Redis and in-memory fallback paths
+CACHE_TTL_SECONDS   = 3600  # 1 hour — scout result cache
+SESSION_TTL_SECONDS = 3600  # 1 hour — review session store
 
-# Review session store: session_id -> { ts, location, duration, colors, photos, restaurants, attractions }
-# Holds raw verified item data between /generate and /finalize so we don't re-run scouts.
-_session_store = {}
-SESSION_TTL_SECONDS = 3600  # 1 hour
+# ── In-memory fallbacks (used when Redis is unavailable) ─────────────────────
+# Structure mirrors the Redis representation so callers behave identically.
+#   _cache:         key -> (timestamp_float, result)
+#   _session_store: session_id -> { ts, location, duration, colors, photos,
+#                                   restaurants, attractions }
+_cache: dict = {}
+_session_store: dict = {}
 
 # Scout retry settings — if a scout returns 0 items (malformed response or Places wipeout),
 # retry up to SCOUT_MAX_RETRIES times before surfacing a warning to the user.
@@ -496,7 +500,23 @@ def _cache_key(*args):
 
 
 def _get_cached(key):
-    """Return cached value if still valid, else None."""
+    """
+    Return cached scout result for key, or None on miss/expiry.
+
+    Redis path:  GET cache:{key}  (TTL enforced by Redis automatically)
+    Fallback:    check _cache dict with manual timestamp comparison
+    """
+    r = get_redis()
+    if r is not None:
+        try:
+            raw = r.get(f"cache:{key}")
+            if raw is not None:
+                return json.loads(raw)
+        except Exception as exc:
+            logger.warning("Redis cache GET error: %s", exc)
+        return None
+
+    # In-memory fallback
     entry = _cache.get(key)
     if entry and (time.time() - entry[0]) < CACHE_TTL_SECONDS:
         return entry[1]
@@ -504,18 +524,86 @@ def _get_cached(key):
 
 
 def _set_cached(key, value):
-    """Store value in cache with current timestamp."""
+    """
+    Store scout result in cache with TTL.
+
+    Redis path:  SETEX cache:{key} TTL json(value)
+    Fallback:    store (timestamp, value) in _cache dict
+    """
+    r = get_redis()
+    if r is not None:
+        try:
+            r.setex(f"cache:{key}", CACHE_TTL_SECONDS, json.dumps(value))
+        except Exception as exc:
+            logger.warning("Redis cache SET error: %s", exc)
+        return
+
+    # In-memory fallback
     _cache[key] = (time.time(), value)
 
 
 def _evict_sessions():
-    """Remove expired review sessions from memory."""
+    """
+    Remove expired review sessions from the in-memory fallback store.
+    No-op when Redis is active (Redis TTLs handle expiry automatically).
+    """
+    r = get_redis()
+    if r is not None:
+        return  # Redis handles TTL expiry automatically
+
     cutoff = time.time() - SESSION_TTL_SECONDS
     expired = [k for k, v in _session_store.items() if v['ts'] < cutoff]
     for k in expired:
         del _session_store[k]
     if expired:
         logger.info("Evicted %d expired review session(s)", len(expired))
+
+
+def _session_set(session_id: str, payload: dict) -> None:
+    """
+    Persist a review session with TTL.
+
+    Redis path:  SETEX session:{id} TTL json(payload)
+    Fallback:    store payload in _session_store dict
+    """
+    r = get_redis()
+    if r is not None:
+        try:
+            r.setex(f"session:{session_id}", SESSION_TTL_SECONDS, json.dumps(payload))
+            return
+        except Exception as exc:
+            logger.warning("Redis session SET error: %s — falling back to memory", exc)
+
+    # In-memory fallback (includes ts for manual eviction)
+    _session_store[session_id] = {**payload, 'ts': time.time()}
+
+
+def _session_get(session_id: str) -> dict | None:
+    """
+    Retrieve a review session by ID, or None if missing/expired.
+
+    Redis path:  GET session:{id}
+    Fallback:    look up _session_store dict
+    """
+    r = get_redis()
+    if r is not None:
+        try:
+            raw = r.get(f"session:{session_id}")
+            if raw is not None:
+                return json.loads(raw)
+        except Exception as exc:
+            logger.warning("Redis session GET error: %s — trying memory", exc)
+        # Redis miss (or error) — check in-memory as last resort
+        entry = _session_store.get(session_id)
+        if entry and (time.time() - entry.get('ts', 0)) < SESSION_TTL_SECONDS:
+            return entry
+        return None
+
+    # In-memory fallback
+    entry = _session_store.get(session_id)
+    if entry and (time.time() - entry.get('ts', 0)) < SESSION_TTL_SECONDS:
+        return entry
+    return None
 
 
 def _parse_json_lines(text, scout_name):
@@ -2365,15 +2453,14 @@ def generate_trip_guide():
         # the user has reviewed and approved their selections.
         _evict_sessions()
         session_id = str(uuid.uuid4())
-        _session_store[session_id] = {
-            'ts':          time.time(),
+        _session_set(session_id, {
             'location':    location,
             'duration':    duration,
             'colors':      colors,
             'photos':      results['photos'],
             'restaurants': results['restaurants'],
             'attractions': results['attractions'],
-        }
+        })
         logger.info(
             "Session %s created — %d photos, %d restaurants, %d attractions",
             session_id[:8], len(results['photos']), len(results['restaurants']), len(results['attractions'])
@@ -2468,16 +2555,16 @@ def finalize_guide():
         data = request.get_json(force=True)
         session_id = str(data.get('session_id', '')).strip()
 
-        # ── Resolve session: in-memory first, DB fallback ──────────────────
-        if session_id and session_id in _session_store:
-            session     = _session_store[session_id]
-            location    = session['location']
-            duration    = session['duration']
-            colors      = session['colors']
-            all_photos  = session['photos']
-            all_rests   = session['restaurants']
-            all_attrs   = session['attractions']
-            logger.info("Finalize: session %s resolved from memory store", session_id[:8])
+        # ── Resolve session: Redis/memory first, DB fallback ──────────────
+        _sess = _session_get(session_id) if session_id else None
+        if _sess:
+            location    = _sess['location']
+            duration    = _sess['duration']
+            colors      = _sess['colors']
+            all_photos  = _sess['photos']
+            all_rests   = _sess['restaurants']
+            all_attrs   = _sess['attractions']
+            logger.info("Finalize: session %s resolved from store", session_id[:8])
         elif session_id:
             # Memory miss — try to reconstruct from the saved Trip record.
             db_trip = Trip.query.filter_by(session_id=session_id, is_deleted=False).first()
@@ -2643,12 +2730,15 @@ def replace_item():
             interests  = db_trip.photo_interests  or ''
             cuisines_str = db_trip.cuisines or ''
             categories = db_trip.attraction_cats  or ''
-        elif session_id and session_id in _session_store:
-            sess     = _session_store[session_id]
-            location = sess['location']
-            duration = sess['duration']
-            budget   = 'Moderate'
-            distance = 'Up to 30 minutes'
+        elif session_id:
+            sess = _session_get(session_id)
+            if sess:
+                location = sess['location']
+                duration = sess['duration']
+                budget   = 'Moderate'
+                distance = 'Up to 30 minutes'
+            else:
+                return jsonify({'error': 'Session not found — please start over.'}), 404
         else:
             return jsonify({'error': 'Session not found — please start over.'}), 404
 
@@ -2868,11 +2958,15 @@ Budget: {budget} | Travel radius: {distance}"""
             except Exception as db_exc:
                 logger.error("Replace: DB update failed: %s", db_exc)
 
-        # ── Update the in-memory session store if still alive ──────────────
-        if session_id and session_id in _session_store:
-            sess_arr = _session_store[session_id].get(item_type, [])
-            if item_idx < len(sess_arr):
-                sess_arr[item_idx] = new_item
+        # ── Update the session store if still alive ────────────────────────
+        if session_id:
+            sess = _session_get(session_id)
+            if sess:
+                sess_arr = sess.get(item_type, [])
+                if item_idx < len(sess_arr):
+                    sess_arr[item_idx] = new_item
+                    sess[item_type] = sess_arr
+                    _session_set(session_id, sess)
 
         return jsonify({'item': new_item})
 
