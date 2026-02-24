@@ -1,12 +1,12 @@
 """
-trips.py — Trip persistence Blueprint for Trip Master
+trips.py — Trip persistence router for Trip Master (FastAPI)
 
 Routes (all require authentication):
-  GET    /trips                  — list trips (optionally filter by client_id)
-  POST   /trips                  — create a trip record (draft, from /generate data)
-  GET    /trips/<id>             — get one trip (with full raw suggestions)
-  PUT    /trips/<id>             — update a trip (e.g. save approved selections / finalized HTML)
-  DELETE /trips/<id>             — soft-delete a trip
+  GET    /trips              — list trips (optional ?client_id=N filter)
+  POST   /trips              — create a trip record (draft, from /generate data)
+  GET    /trips/{id}         — get one trip (optional ?include_html=true)
+  PUT    /trips/{id}         — partial update (approved selections, final HTML, etc.)
+  DELETE /trips/{id}         — soft-delete a trip
 
 A trip is first saved as 'draft' when /generate returns results.
 When /finalize completes, the trip is updated to 'finalized' with approved
@@ -16,23 +16,28 @@ indices and final HTML.
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
-from flask import Blueprint, request, jsonify, g
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
-from models import db, Trip, Client
-from auth import require_auth
+from database import get_db
+from auth import get_current_user
+from schemas import TripCreate, TripUpdate
+from models import Trip, Client, StaffUser
 
 logger = logging.getLogger(__name__)
 
-trips_bp = Blueprint('trips', __name__, url_prefix='/trips')
+trips_router = APIRouter(prefix='/trips', tags=['trips'])
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _trip_or_404(trip_id: int):
-    trip = db.session.get(Trip, trip_id)
+def _trip_or_404(db: Session, trip_id: int) -> Trip:
+    trip = db.get(Trip, trip_id)
     if not trip or trip.is_deleted:
-        return None
+        raise HTTPException(status_code=404, detail='Trip not found')
     return trip
 
 
@@ -40,117 +45,97 @@ def _auto_title(location: str, duration: int) -> str:
     return f"{location} — {duration} day{'s' if duration != 1 else ''}"
 
 
-# ── Routes ───────────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
-@trips_bp.route('', methods=['GET'])
-@require_auth
-def list_trips():
+@trips_router.get('')
+async def list_trips(
+    client_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
     """GET /trips[?client_id=N] — list non-deleted trips, newest first."""
-    client_id = request.args.get('client_id', type=int)
+    def _query():
+        q = db.query(Trip).filter_by(is_deleted=False)
+        if client_id is not None:
+            q = q.filter_by(client_id=client_id)
+        return q.order_by(Trip.created_at.desc()).all()
 
-    q = Trip.query.filter_by(is_deleted=False)
-    if client_id is not None:
-        q = q.filter_by(client_id=client_id)
-    trips = q.order_by(Trip.created_at.desc()).all()
-
-    return jsonify({'trips': [t.to_dict() for t in trips]})
+    trips = await run_in_threadpool(_query)
+    return {'trips': [t.to_dict() for t in trips]}
 
 
-@trips_bp.route('', methods=['POST'])
-@require_auth
-def create_trip():
+@trips_router.post('', status_code=201)
+async def create_trip(
+    body: TripCreate,
+    db: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
     """
     POST /trips — save a trip draft immediately after /generate returns.
-
-    Expected body:
-    {
-      "client_id": 3,             // optional
-      "session_id": "uuid",
-      "location": "Paris, France",
-      "duration": 3,
-      "budget": "moderate",
-      "distance": "walking",
-      "include_photos": true,
-      "include_dining": true,
-      "include_attractions": true,
-      "photos_per_day": 3,
-      "restaurants_per_day": 3,
-      "attractions_per_day": 4,
-      "photo_interests": "...",
-      "cuisines": "...",
-      "attraction_cats": "...",
-      "raw_photos": [...],
-      "raw_restaurants": [...],
-      "raw_attractions": [...],
-      "colors": {...}
-    }
     """
-    data = request.get_json(force=True, silent=True) or {}
+    def _create():
+        if body.client_id is not None:
+            client = db.get(Client, body.client_id)
+            if not client or client.is_deleted:
+                raise HTTPException(status_code=404, detail='Client not found')
 
-    location = str(data.get('location', '')).strip()
-    if not location:
-        return jsonify({'error': 'location is required'}), 400
+        title = body.title or _auto_title(body.location, body.duration)
 
-    try:
-        duration = int(data.get('duration', 1))
-    except (ValueError, TypeError):
-        return jsonify({'error': 'duration must be an integer'}), 400
+        trip = Trip(
+            client_id            = body.client_id,
+            created_by_id        = current_user.id,
+            title                = title,
+            status               = 'draft',
+            location             = body.location,
+            duration             = body.duration,
+            budget               = body.budget,
+            distance             = body.distance,
+            include_photos       = body.include_photos,
+            include_dining       = body.include_dining,
+            include_attractions  = body.include_attractions,
+            photos_per_day       = body.photos_per_day,
+            restaurants_per_day  = body.restaurants_per_day,
+            attractions_per_day  = body.attractions_per_day,
+            photo_interests      = body.photo_interests,
+            cuisines             = body.cuisines,
+            attraction_cats      = body.attraction_cats,
+            raw_photos           = json.dumps(body.raw_photos),
+            raw_restaurants      = json.dumps(body.raw_restaurants),
+            raw_attractions      = json.dumps(body.raw_attractions),
+            colors               = json.dumps(body.colors),
+            session_id           = body.session_id,
+        )
+        db.add(trip)
+        db.commit()
+        db.refresh(trip)
+        return trip
 
-    client_id = data.get('client_id')
-    if client_id is not None:
-        client_id = int(client_id)
-        client = db.session.get(Client, client_id)
-        if not client or client.is_deleted:
-            return jsonify({'error': 'Client not found'}), 404
-
-    title = str(data.get('title', '')).strip() or _auto_title(location, duration)
-
-    trip = Trip(
-        client_id            = client_id,
-        created_by_id        = g.current_user.id,
-        title                = title,
-        status               = 'draft',
-        location             = location,
-        duration             = duration,
-        budget               = str(data.get('budget',   '')).strip() or None,
-        distance             = str(data.get('distance', '')).strip() or None,
-        include_photos       = bool(data.get('include_photos',       True)),
-        include_dining       = bool(data.get('include_dining',       True)),
-        include_attractions  = bool(data.get('include_attractions',  True)),
-        photos_per_day       = int(data.get('photos_per_day',      3)),
-        restaurants_per_day  = int(data.get('restaurants_per_day', 3)),
-        attractions_per_day  = int(data.get('attractions_per_day', 4)),
-        photo_interests      = str(data.get('photo_interests',  '')).strip() or None,
-        cuisines             = str(data.get('cuisines',         '')).strip() or None,
-        attraction_cats      = str(data.get('attraction_cats',  '')).strip() or None,
-        raw_photos           = json.dumps(data.get('raw_photos',      [])),
-        raw_restaurants      = json.dumps(data.get('raw_restaurants', [])),
-        raw_attractions      = json.dumps(data.get('raw_attractions', [])),
-        colors               = json.dumps(data.get('colors', {})),
-        session_id           = str(data.get('session_id', '')).strip() or None,
-    )
-    db.session.add(trip)
-    db.session.commit()
-
-    logger.info("Trip draft created: id=%d %r by staff %d", trip.id, title, g.current_user.id)
-    return jsonify({'trip': trip.to_dict()}), 201
+    trip = await run_in_threadpool(_create)
+    logger.info("Trip draft created: id=%d %r by staff %d", trip.id, trip.title, current_user.id)
+    return {'trip': trip.to_dict()}
 
 
-@trips_bp.route('/<int:trip_id>', methods=['GET'])
-@require_auth
-def get_trip(trip_id):
-    """GET /trips/<id> — full trip including raw suggestions."""
-    trip = _trip_or_404(trip_id)
-    if not trip:
-        return jsonify({'error': 'Trip not found'}), 404
-    return jsonify({'trip': trip.to_dict(include_html=True)})
+@trips_router.get('/{trip_id}')
+async def get_trip(
+    trip_id: int,
+    include_html: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """GET /trips/{id} — full trip including raw suggestions."""
+    trip = await run_in_threadpool(lambda: _trip_or_404(db, trip_id))
+    return {'trip': trip.to_dict(include_html=include_html)}
 
 
-@trips_bp.route('/<int:trip_id>', methods=['PUT'])
-@require_auth
-def update_trip(trip_id):
+@trips_router.put('/{trip_id}')
+async def update_trip(
+    trip_id: int,
+    body: TripUpdate,
+    db: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
     """
-    PUT /trips/<id> — partial update.
+    PUT /trips/{id} — partial update.
 
     Used by the frontend after /finalize to save:
       - approved_photo_indices, approved_restaurant_indices, approved_attraction_indices
@@ -158,63 +143,64 @@ def update_trip(trip_id):
       - status → 'finalized'
     Also used to re-assign a client, update the title, etc.
     """
-    trip = _trip_or_404(trip_id)
-    if not trip:
-        return jsonify({'error': 'Trip not found'}), 404
+    def _update():
+        trip = _trip_or_404(db, trip_id)
+        sent = body.model_fields_set
 
-    data = request.get_json(force=True, silent=True) or {}
+        # Status update
+        if 'status' in sent and body.status is not None:
+            trip.status = body.status
 
-    # Status update
-    if 'status' in data:
-        if data['status'] in ('draft', 'finalized'):
-            trip.status = data['status']
+        # Title
+        if 'title' in sent and body.title is not None:
+            trip.title = body.title or trip.title
 
-    # Title
-    if 'title' in data:
-        trip.title = str(data['title']).strip() or trip.title
+        # Client re-assignment
+        if 'client_id' in sent:
+            if body.client_id is None:
+                trip.client_id = None
+            else:
+                client = db.get(Client, body.client_id)
+                if not client or client.is_deleted:
+                    raise HTTPException(status_code=404, detail='Client not found')
+                trip.client_id = body.client_id
 
-    # Client re-assignment
-    if 'client_id' in data:
-        cid = data['client_id']
-        if cid is None:
-            trip.client_id = None
-        else:
-            cid = int(cid)
-            client = db.session.get(Client, cid)
-            if not client or client.is_deleted:
-                return jsonify({'error': 'Client not found'}), 404
-            trip.client_id = cid
+        # Approved index arrays (stored as JSON strings)
+        if 'approved_photo_indices' in sent and body.approved_photo_indices is not None:
+            trip.approved_photo_indices = json.dumps(body.approved_photo_indices)
+        if 'approved_restaurant_indices' in sent and body.approved_restaurant_indices is not None:
+            trip.approved_restaurant_indices = json.dumps(body.approved_restaurant_indices)
+        if 'approved_attraction_indices' in sent and body.approved_attraction_indices is not None:
+            trip.approved_attraction_indices = json.dumps(body.approved_attraction_indices)
 
-    # Approved index arrays (JSON lists)
-    if 'approved_photo_indices' in data:
-        trip.approved_photo_indices = json.dumps(data['approved_photo_indices'])
-    if 'approved_restaurant_indices' in data:
-        trip.approved_restaurant_indices = json.dumps(data['approved_restaurant_indices'])
-    if 'approved_attraction_indices' in data:
-        trip.approved_attraction_indices = json.dumps(data['approved_attraction_indices'])
+        # Final HTML (potentially large)
+        if 'final_html' in sent:
+            trip.final_html = body.final_html
 
-    # Final HTML (potentially large)
-    if 'final_html' in data:
-        trip.final_html = data['final_html']
+        trip.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(trip)
+        return trip
 
-    trip.updated_at = datetime.now(timezone.utc)
-    db.session.commit()
-
-    logger.info("Trip updated: id=%d status=%s by staff %d", trip.id, trip.status, g.current_user.id)
-    return jsonify({'trip': trip.to_dict()})
+    trip = await run_in_threadpool(_update)
+    logger.info("Trip updated: id=%d status=%s by staff %d", trip.id, trip.status, current_user.id)
+    return {'trip': trip.to_dict()}
 
 
-@trips_bp.route('/<int:trip_id>', methods=['DELETE'])
-@require_auth
-def delete_trip(trip_id):
-    """DELETE /trips/<id> — soft-delete."""
-    trip = _trip_or_404(trip_id)
-    if not trip:
-        return jsonify({'error': 'Trip not found'}), 404
+@trips_router.delete('/{trip_id}')
+async def delete_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """DELETE /trips/{id} — soft-delete."""
+    def _delete():
+        trip = _trip_or_404(db, trip_id)
+        trip.is_deleted = True
+        trip.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return trip
 
-    trip.is_deleted = True
-    trip.updated_at = datetime.now(timezone.utc)
-    db.session.commit()
-
-    logger.info("Trip soft-deleted: id=%d by staff %d", trip.id, g.current_user.id)
-    return jsonify({'status': 'ok', 'message': f'Trip #{trip.id} deleted'})
+    trip = await run_in_threadpool(_delete)
+    logger.info("Trip soft-deleted: id=%d by staff %d", trip.id, current_user.id)
+    return {'status': 'ok', 'message': f'Trip #{trip.id} deleted'}
