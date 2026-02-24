@@ -651,7 +651,7 @@ def call_photo_scout(location, duration, interests, distance, per_day=None,
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Photo Scout: cache hit for %s", location)
-        return cached
+        return key, cached
 
     count = duration * per_day
 
@@ -749,9 +749,9 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
     locations = _parse_json_lines(message.content[0].text, "Photo Scout")
     logger.info("Photo Scout: parsed %d/%d locations for %s", len(locations), count, location)
-    if locations:  # never cache empty — a failed parse should retry next time
-        _set_cached(key, locations)
-    return locations
+    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
+    # Places verification so cached results always include _lat/_lng coordinates.
+    return key, locations
 
 
 def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
@@ -772,7 +772,7 @@ def call_restaurant_scout(location, duration, cuisines, budget, distance, per_da
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Restaurant Scout: cache hit for %s", location)
-        return cached
+        return key, cached
 
     count = duration * per_day
 
@@ -883,9 +883,9 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
     restaurants = _parse_json_lines(message.content[0].text, "Restaurant Scout")
     logger.info("Restaurant Scout: parsed %d/%d restaurants for %s", len(restaurants), count, location)
-    if restaurants:
-        _set_cached(key, restaurants)
-    return restaurants
+    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
+    # Places verification so cached results always include _lat/_lng coordinates.
+    return key, restaurants
 
 
 def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
@@ -906,7 +906,7 @@ def call_attraction_scout(location, duration, categories, budget, distance, per_
     cached = _get_cached(key)
     if cached is not None:
         logger.info("Attraction Scout: cache hit for %s", location)
-        return cached
+        return key, cached
 
     count = duration * per_day
 
@@ -1017,9 +1017,9 @@ Provide {count} complete JSON objects, one per line. No markdown, no other text.
 
     attractions = _parse_json_lines(message.content[0].text, "Attraction Scout")
     logger.info("Attraction Scout: parsed %d/%d attractions for %s", len(attractions), count, location)
-    if attractions:
-        _set_cached(key, attractions)
-    return attractions
+    # Return (cache_key, items) — caching happens in _run_single_scout AFTER
+    # Places verification so cached results always include _lat/_lng coordinates.
+    return key, attractions
 
 
 def create_google_maps_link(name, address, coordinates):
@@ -2180,15 +2180,24 @@ def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=Non
     computed from that point to each verified item and written into travel_time.
     Unverified items (no _lat/_lng) keep the Claude-generated text estimate.
 
+    If cache_key is provided, verified (non-empty) results are stored in the
+    cache so subsequent cache hits always include _lat/_lng coordinates.
+    Caching intentionally happens here — AFTER verification — so cached items
+    always carry the Places-verified coordinates needed for map pins.
+
     Raises on API/network errors so the caller can catch and decide whether to
     retry.  Returns a list that may be empty if the scout produced no parseable
     results or all results were filtered out by Places.
     """
-    items = fn(*args, **kwargs)
+    # Scouts return (cache_key, items) so we can cache AFTER verification
+    scout_cache_key, items = fn(*args, **kwargs)
     if items and PLACES_VERIFY_ENABLED:
         items, _ = verify_places_batch(items, 'name', 'address', location)
     if items and accommodation_coords and accommodation_coords[0] is not None:
         _apply_distances(items, accommodation_coords[0], accommodation_coords[1])
+    # Cache verified results (non-empty only — empty results should always retry fresh)
+    if items and scout_cache_key:
+        _set_cached(scout_cache_key, items)
     return items
 
 
