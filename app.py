@@ -104,6 +104,16 @@ app.register_blueprint(trips_bp)
 # Register CLI commands (flask create-user)
 register_cli(app)
 
+# ── Redis startup check ───────────────────────────────────────────────────────
+# Force the lazy Redis connection to resolve now, at startup, so the connected /
+# fallback log line appears in deployment logs immediately rather than on the
+# first request. Uses WARNING so it's always visible regardless of log level.
+_redis_startup = get_redis()
+if _redis_startup is not None:
+    logger.warning("Redis connected and ready (session store, cache, rate limiters active)")
+else:
+    logger.warning("Redis unavailable — using in-memory fallbacks (set REDIS_URL to enable)")
+
 # Create DB tables and configure SQLite WAL mode.
 # The app_context block is required here because db.engine is lazily bound to
 # the app — accessing it outside a context raises RuntimeError.
