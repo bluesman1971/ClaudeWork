@@ -19,6 +19,8 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 
+from redis_client import get_redis
+
 import bcrypt
 import jwt
 from flask import Blueprint, request, jsonify, g, make_response, current_app
@@ -38,43 +40,75 @@ BCRYPT_ROUNDS = 12
 
 # ── Login rate limiting ───────────────────────────────────────────────────────
 # Tracks failed login attempts per IP.  After LOGIN_MAX_ATTEMPTS failures within
-# LOGIN_WINDOW_SECONDS, further attempts are blocked for LOGIN_LOCKOUT_SECONDS.
-# Uses an in-memory store — resets on server restart (acceptable for defence-in-depth;
-# a Redis-backed store would be needed for multi-worker persistent rate limiting).
-LOGIN_MAX_ATTEMPTS    = 10   # allowed failures before lockout
-LOGIN_WINDOW_SECONDS  = 300  # 5 minutes — sliding window for counting failures
-LOGIN_LOCKOUT_SECONDS = 600  # 10 minutes — lockout duration after exceeding limit
+# LOGIN_WINDOW_SECONDS, further attempts are blocked.
+#
+# Redis path:  sorted set  ratelimit:login:{ip}
+#              members are timestamps (score = timestamp, member = timestamp string)
+#              ZREMRANGEBYSCORE prunes old entries; ZCARD counts remaining.
+# Fallback:    in-memory dict per-worker (resets on restart).
+LOGIN_MAX_ATTEMPTS   = 10   # allowed failures before lockout
+LOGIN_WINDOW_SECONDS = 300  # 5-minute sliding window
 
-_login_attempts: dict = defaultdict(list)  # ip -> [timestamp, ...]
+_login_attempts: dict = defaultdict(list)  # ip -> [timestamp, ...] (fallback only)
 _login_lock = threading.Lock()
 
 
 def _check_login_rate_limit(ip: str) -> bool:
     """
     Return True if the request should be allowed, False if the IP is rate-limited.
-    Prunes old entries and checks the failure count within the sliding window.
+    Uses a Redis sorted-set sliding window when Redis is available, otherwise
+    falls back to the in-memory dict.
     """
     now = time.time()
+    r = get_redis()
+
+    if r is not None:
+        try:
+            key = f"ratelimit:login:{ip}"
+            pipe = r.pipeline()
+            # Remove timestamps older than the window
+            pipe.zremrangebyscore(key, '-inf', now - LOGIN_WINDOW_SECONDS)
+            pipe.zcard(key)
+            pipe.expire(key, LOGIN_WINDOW_SECONDS)
+            _, count, _ = pipe.execute()
+            return count < LOGIN_MAX_ATTEMPTS
+        except Exception as exc:
+            logger.warning("Redis login rate-limit check error: %s — falling back", exc)
+
+    # In-memory fallback
     with _login_lock:
-        # Remove attempts outside the sliding window
         _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < LOGIN_WINDOW_SECONDS]
-        if len(_login_attempts[ip]) >= LOGIN_MAX_ATTEMPTS:
-            return False
-        return True
+        return len(_login_attempts[ip]) < LOGIN_MAX_ATTEMPTS
 
 
 def _record_login_failure(ip: str):
     """Record a failed login attempt for the given IP."""
+    now = time.time()
+    r = get_redis()
+
+    if r is not None:
+        try:
+            key = f"ratelimit:login:{ip}"
+            pipe = r.pipeline()
+            pipe.zadd(key, {str(now): now})
+            pipe.expire(key, LOGIN_WINDOW_SECONDS)
+            pipe.execute()
+            return
+        except Exception as exc:
+            logger.warning("Redis login failure record error: %s — falling back", exc)
+
+    # In-memory fallback
     with _login_lock:
-        _login_attempts[ip].append(time.time())
+        _login_attempts[ip].append(now)
 
 
 # ── Per-user AI endpoint rate limiting ───────────────────────────────────────
 # Limits authenticated users from hammering the expensive AI scout endpoints.
 # Keyed by (user_id, endpoint) so /generate and /replace have independent budgets.
-# Uses the same sliding-window pattern as login rate limiting.
-# In-memory only — resets on restart, which is acceptable for an internal tool.
-# For a public deployment, back this with Redis for persistence across workers.
+#
+# Redis path:  sorted set  ratelimit:user:{user_id}:{endpoint}
+#              members are timestamps; ZREMRANGEBYSCORE prunes the window.
+# Fallback:    in-memory dict per-worker (resets on restart).
 
 RATE_LIMIT_RULES: dict[str, tuple[int, int]] = {
     # endpoint_key -> (max_requests, window_seconds)
@@ -82,7 +116,7 @@ RATE_LIMIT_RULES: dict[str, tuple[int, int]] = {
     'replace':  (60, 600),   # 60 calls per 10 minutes
 }
 
-_user_requests: dict = defaultdict(list)  # (user_id, endpoint) -> [timestamp, ...]
+_user_requests: dict = defaultdict(list)  # (user_id, endpoint) -> [timestamp, ...] (fallback)
 _user_rate_lock = threading.Lock()
 
 
@@ -94,26 +128,52 @@ def check_user_rate_limit(user_id: int, endpoint: str) -> tuple[bool, int]:
     If allowed, also records this request timestamp.
     If not allowed, retry_after_seconds is the number of seconds until the
     oldest request in the window expires (i.e. when a slot opens up).
+
+    Uses Redis sorted-set sliding window when available; falls back to the
+    in-memory dict otherwise.
     """
     rule = RATE_LIMIT_RULES.get(endpoint)
     if rule is None:
         return True, 0   # unknown endpoint — let it through
 
     max_requests, window = rule
-    key = (user_id, endpoint)
     now = time.time()
+    r = get_redis()
 
+    if r is not None:
+        try:
+            rkey = f"ratelimit:user:{user_id}:{endpoint}"
+            pipe = r.pipeline()
+            # Prune entries outside the sliding window
+            pipe.zremrangebyscore(rkey, '-inf', now - window)
+            pipe.zrange(rkey, 0, -1, withscores=True)
+            pipe.expire(rkey, window)
+            _, entries, _ = pipe.execute()
+
+            count = len(entries)
+            if count >= max_requests:
+                oldest_score = min(score for _, score in entries)
+                retry_after = int(window - (now - oldest_score)) + 1
+                return False, retry_after
+
+            # Record this request
+            r.zadd(rkey, {str(now): now})
+            r.expire(rkey, window)
+            return True, 0
+        except Exception as exc:
+            logger.warning("Redis user rate-limit error: %s — falling back", exc)
+
+    # In-memory fallback
+    mem_key = (user_id, endpoint)
     with _user_rate_lock:
-        # Prune timestamps outside the sliding window
-        _user_requests[key] = [t for t in _user_requests[key] if now - t < window]
+        _user_requests[mem_key] = [t for t in _user_requests[mem_key] if now - t < window]
 
-        if len(_user_requests[key]) >= max_requests:
-            oldest = min(_user_requests[key])
+        if len(_user_requests[mem_key]) >= max_requests:
+            oldest = min(_user_requests[mem_key])
             retry_after = int(window - (now - oldest)) + 1
             return False, retry_after
 
-        # Record this request
-        _user_requests[key].append(now)
+        _user_requests[mem_key].append(now)
         return True, 0
 
 
