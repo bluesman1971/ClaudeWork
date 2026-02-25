@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean, Column, DateTime, ForeignKey, Integer, String, Text,
 )
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import declarative_base, relationship
 
 
 def _utcnow():
@@ -24,20 +24,16 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
-class _Base(DeclarativeBase):
-    pass
-
-
 # db is kept as a module-level name so external imports (database.py, manage.py)
-# can reference db.metadata for table creation.  db.Model is the mapped base class.
-db = _Base()
+# can reference db.metadata for table creation.
+db = declarative_base()
 
 
 # ---------------------------------------------------------------------------
 # StaffUser
 # ---------------------------------------------------------------------------
 
-class StaffUser(db.Model):
+class StaffUser(db):
     __tablename__ = 'staff_users'
 
     id            = Column(Integer, primary_key=True)
@@ -74,7 +70,7 @@ class StaffUser(db.Model):
 # Client
 # ---------------------------------------------------------------------------
 
-class Client(db.Model):
+class Client(db):
     __tablename__ = 'clients'
 
     id               = Column(Integer, primary_key=True)
@@ -131,7 +127,7 @@ class Client(db.Model):
 # Trip
 # ---------------------------------------------------------------------------
 
-class Trip(db.Model):
+class Trip(db):
     __tablename__ = 'trips'
 
     id            = Column(Integer, primary_key=True)
