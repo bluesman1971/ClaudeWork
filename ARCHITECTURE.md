@@ -4,7 +4,7 @@
 
 Trip Master is an internal tool for travel consultants. A logged-in staff member enters a destination, trip duration, and preferences (photography spots, restaurants, attractions). The app calls the Anthropic Claude API to generate curated recommendations for each category, optionally verifies each venue is still open via the Google Places API, then assembles a formatted HTML travel guide the consultant can review and save.
 
-The app is a single-service, full-stack web app: the Flask backend serves both the API routes **and** the frontend HTML page from the same Railway URL.
+The app is a single-service, full-stack web app: the FastAPI backend serves both the API routes **and** the frontend HTML page from the same Railway URL.
 
 ---
 
@@ -13,15 +13,19 @@ The app is a single-service, full-stack web app: the Flask backend serves both t
 ```
 trip-guide-app/
 │
-├── app.py              # Main Flask application — routes, AI scouts, config
-├── auth.py             # Authentication blueprint — JWT, login, rate limiting
+├── app.py              # Main FastAPI application — routes, AI scouts, config
+├── auth.py             # Authentication router — JWT, login, rate limiting
 ├── models.py           # SQLAlchemy ORM models (StaffUser, Client, Trip)
-├── clients.py          # Client CRM blueprint — CRUD for client records
-├── trips.py            # Trips blueprint — CRUD for saved trip guides
+├── clients.py          # Client CRM router — CRUD for client records
+├── trips.py            # Trips router — CRUD for saved trip guides
+├── schemas.py          # Pydantic v2 request/response models (validation)
+├── database.py         # SQLAlchemy engine, SessionLocal, get_db dependency
+├── redis_client.py     # Redis connection, SessionStore, Cache, rate limiters
+├── manage.py           # Click CLI — create-user admin command
 │
 ├── index.html          # Single-page frontend (vanilla JS, no framework)
 │
-├── wsgi.py             # Gunicorn entry point — imports app as 'application'
+├── wsgi.py             # Stub re-export kept for tooling compatibility
 ├── Procfile            # Railway/Gunicorn startup command
 ├── runtime.txt         # Pins Python version for Railway (python-3.11.9)
 ├── requirements.txt    # All Python dependencies with pinned versions
@@ -37,16 +41,20 @@ trip-guide-app/
 | Layer | Technology | Why |
 |---|---|---|
 | Language | Python 3.11.9 | Pinned in runtime.txt for Railway |
-| Web framework | Flask 2.3.3 | Lightweight, easy to reason about |
-| WSGI server | Gunicorn 21.2.0 (gthread workers) | Production-grade, multi-threaded |
-| Database ORM | Flask-SQLAlchemy 3.1.1 / SQLAlchemy 2.0 | Models, migrations, query builder |
+| Web framework | FastAPI 0.115.x | Async-native, Pydantic validation built in |
+| ASGI server | Gunicorn 21.2.0 + UvicornWorker | Production-grade async workers |
+| HTTP client | httpx 0.28.x | Async HTTP replaces urllib.request in scouts |
+| Request validation | Pydantic v2 | Replaces all manual `_sanitise_line`/`_clamp` calls |
+| Database ORM | SQLAlchemy 2.0 (sync) | Models, query builder — sync ORM via run_in_threadpool |
 | Database (prod) | PostgreSQL via Supabase | Managed, free tier available |
 | Database (dev) | SQLite | Zero config for local development |
 | DB driver | psycopg2-binary 2.9.10 | PostgreSQL adapter for Python |
 | Auth | PyJWT 2.10.1 + bcrypt 4.2.1 | JWT tokens in httpOnly cookies |
-| AI | Anthropic SDK ≥0.40.0 (Claude Haiku 4.5) | Generates recommendations |
+| Session store | Redis (Railway add-on) | Cross-worker session persistence (falls back to in-memory) |
+| Cache | Redis | Cross-worker scout result cache (falls back to in-memory) |
+| Rate limiting | Redis sorted sets | Login + per-user AI rate limits (falls back to in-memory) |
+| AI | Anthropic SDK — AsyncAnthropic (Claude Haiku 4.5) | Async scout calls via asyncio.gather |
 | Place verification | Google Places API (optional) | Confirms venues are still open |
-| CORS | Flask-CORS 4.0.0 | Cross-origin header management |
 | Env vars | python-dotenv 1.0.0 | Loads .env in development |
 | Hosting | Railway.app (Hobby plan) | Git-connected, auto-deploys on push |
 
@@ -61,6 +69,7 @@ All configuration lives in environment variables. In development, these are load
 | `ANTHROPIC_API_KEY` | **Yes** | Anthropic API key (`sk-ant-...`). Get from console.anthropic.com |
 | `JWT_SECRET_KEY` | **Yes** | Long random string for signing auth tokens. Generate with: `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `DATABASE_URL` | **Yes (prod)** | PostgreSQL connection string from Supabase. Uses SQLite by default in dev |
+| `REDIS_URL` | No | Redis connection string (Railway Redis add-on sets this automatically). Enables cross-worker session store, cache, and rate limiting. Falls back to in-memory if not set |
 | `FLASK_ENV` | Yes | Set to `production` on Railway. Enables HSTS headers and strict cookie security |
 | `GOOGLE_PLACES_API_KEY` | No | Enables real-time venue verification. App works without it (verification is skipped) |
 | `SCOUT_MODEL` | No | Anthropic model ID to use for all scouts. Defaults to `claude-haiku-4-5-20251001` |
@@ -86,7 +95,7 @@ Authentication is handled entirely in `auth.py`.
 3. A JWT is created containing the user ID and an 8-hour expiry
 4. The JWT is written into an **httpOnly cookie** called `tm_token` — JavaScript cannot read this cookie, which protects against XSS token theft
 5. Every subsequent request from the browser automatically sends this cookie
-6. The `@require_auth` decorator validates the cookie on every protected route, loads the user from the database into `g.current_user`, then slides the token expiry (re-issues a fresh 8-hour cookie on each request so active sessions don't expire mid-use)
+6. The `get_current_user` FastAPI dependency validates the cookie on every protected route, loads the user from the database, then slides the token expiry (re-issues a fresh 8-hour cookie on each request so active sessions don't expire mid-use)
 
 ### CSRF defence
 All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-With: XMLHttpRequest` header. The browser never attaches this header automatically on cross-site requests, so it cannot be forged by a malicious third-party page even if it can trigger a request with the user's session cookie. The `apiFetch()` wrapper in `index.html` adds this header to every call automatically.
@@ -94,18 +103,18 @@ All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-
 **Important when calling the API programmatically (e.g. curl or test scripts):** you must include both the `tm_token` cookie and the `X-Requested-With: XMLHttpRequest` header on all POST/PUT/DELETE requests, or you will receive HTTP 403.
 
 ### Creating the first admin user
-There is no registration UI. Staff accounts are created by an admin using the Flask CLI:
+There is no registration UI. Staff accounts are created by an admin using the CLI:
 ```bash
 # In the Railway shell (Railway → service → Shell tab):
-flask create-user --role admin
+python manage.py create-user --role admin
 # Follow the prompts for email, name, and password
 
 # To create a regular staff account:
-flask create-user --role staff
+python manage.py create-user --role staff
 ```
 
 ### Login rate limiting
-Failed login attempts are tracked per IP address in memory. After 10 failures within 5 minutes, the IP is blocked for 10 minutes and receives HTTP 429. This resets on server restart (acceptable for defence-in-depth; a Redis-backed store would be needed for persistent rate limiting across multiple workers).
+Failed login attempts are tracked per IP address using Redis sorted sets. After 10 failures within 5 minutes, the IP is blocked for 10 minutes and receives HTTP 429. When Redis is available this persists across deploys and is shared between all workers. Falls back to in-memory tracking (per-worker, resets on restart) if Redis is unreachable.
 
 ### Per-user AI endpoint rate limiting
 Authenticated users are rate-limited on the two expensive AI endpoints to prevent runaway API cost from a single account:
@@ -115,7 +124,7 @@ Authenticated users are rate-limited on the two expensive AI endpoints to preven
 | `POST /generate` | 20 requests | 10 minutes |
 | `POST /replace` | 60 requests | 10 minutes |
 
-Implemented in `auth.py` via `check_user_rate_limit(user_id, endpoint)`, using the same sliding-window in-memory pattern as login rate limiting. The limit is keyed by `(user_id, endpoint)` so each user has an independent budget per endpoint. Returns HTTP 429 with a `retry_after` count in the error message. Like the login limiter, this is per-worker and resets on restart — a Redis-backed store would be needed for strict enforcement in a multi-worker public deployment.
+Implemented in `auth.py` via `check_user_rate_limit(user_id, endpoint)` using Redis sorted-set sliding windows. The limit is keyed by `(user_id, endpoint)` so each user has an independent budget per endpoint. Returns HTTP 429 with a `retry_after` count in the error message. Limits are shared across all workers and survive redeploys when Redis is available; falls back to in-memory (per-worker, resets on restart) when Redis is unreachable.
 
 ---
 
@@ -126,15 +135,15 @@ The core feature is the `/generate` endpoint in `app.py`. When a consultant clic
 1. **Validates the request** — checks location, duration (1–14 days), and which categories are enabled (photos, restaurants, attractions)
 2. **Loads the client profile** — if a `client_id` is sent with the request, the client's `home_city`, `preferred_budget`, `travel_style`, `dietary_requirements`, and `notes` are loaded from the DB and injected into each scout prompt for personalisation
 3. **Reads optional trip context** — `accommodation` (hotel name/address used as the travel origin for distance estimates) and `pre_planned` (already-committed events the guide should work around) are accepted as request fields and passed to each scout
-4. **Runs up to 3 scouts in parallel** using `ThreadPoolExecutor(max_workers=3)`:
+4. **Runs up to 3 scouts concurrently** using `asyncio.gather()`:
    - `call_photo_scout` — photography locations with timing, setup, and pro tips
    - `call_restaurant_scout` — dining recommendations with cuisine, price range, and booking notes; respects dietary requirements as a hard constraint
    - `call_attraction_scout` — sightseeing with practical visit info; avoids duplicating pre-planned commitments
-5. **Each scout** sends a structured prompt to Claude Haiku and parses the response as JSON lines (one JSON object per line). Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
-6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API. Permanently closed venues are filtered out. This runs concurrently inside each scout using another `ThreadPoolExecutor`
+5. **Each scout** sends a structured prompt to Claude Haiku via `AsyncAnthropic` and parses the response as JSON lines (one JSON object per line). Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
+6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API using `httpx.AsyncClient`. Permanently closed venues are filtered out. Verification calls run concurrently inside each scout using `asyncio.gather()`
 7. **Retry logic** — if a scout returns 0 results (parse failure or all venues filtered), it retries up to 2 more times with a 1-second delay between attempts
-8. **Session store** — verified results are stored in a server-side in-memory dict (`_session_store`) keyed by a UUID, with a 1-hour TTL. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker
-9. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs), and returns it to the browser
+8. **Session store** — verified results are stored in Redis (keyed by UUID, 1-hour TTL) via the `SessionStore` wrapper in `redis_client.py`. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker. Falls back to an in-memory dict if Redis is unreachable
+9. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs via `httpx`), and returns it to the browser
 
 ### Travel time estimates
 If the consultant enters an accommodation address on the generate form, the app:
@@ -149,11 +158,8 @@ Walking speed used: **80 m/min** — a comfortable urban pace that accounts for 
 
 The accommodation string is also stored on the `Trip` DB record so `/replace` can geocode it for replacement items.
 
-### In-memory caching
-Scout results are cached in `_cache` (a plain dict) for 1 hour keyed on the combination of location, duration, preferences, accommodation, pre_planned, and client profile. Empty results are never cached so a failed parse always retries fresh on the next request.
-
-### Thread safety note
-All three executor sites wrap their callables in `_with_app_context(fn, *args)`. This ensures each thread has its own independent Flask application context. Sharing a single AppContext across threads is not safe — each thread must push and pop its own.
+### Redis-backed caching
+Scout results are cached in Redis (via the `Cache` class in `redis_client.py`) for 1 hour, keyed on a hash of location, duration, preferences, accommodation, pre_planned, and client profile. The cache is shared across all workers so a second consultant generating the same trip gets an instant result. Empty results are never cached so a failed parse always retries fresh. Falls back to an in-memory dict if Redis is unreachable.
 
 ---
 
@@ -253,14 +259,14 @@ Saved travel guide records. Stores both the raw AI output and the final HTML.
 | created_at, updated_at | DateTime | UTC |
 
 ### Database configuration
-`app.py` reads `DATABASE_URL` from the environment. A `_safe_db_url()` helper parses it through SQLAlchemy's `make_url()` before use — this correctly percent-encodes any special characters in the password, so the raw Supabase connection string can be pasted directly into Railway without manual URL-encoding.
+`database.py` reads `DATABASE_URL` from the environment. A `_safe_db_url()` helper normalises the URL (e.g. converts Railway's `postgres://` prefix to `postgresql://`) so the raw Supabase connection string can be pasted directly into Railway without manual editing.
 
 For SQLite (local dev only), WAL (Write-Ahead Logging) mode is enabled on every new connection via `sqlalchemy.event.listen`. This allows concurrent readers and a single writer simultaneously, which prevents "database is locked" errors during local testing.
 
 ### Schema migrations
-`db.create_all()` runs at startup and creates any tables that don't yet exist. It does **not** add new columns to existing tables.
+`db.metadata.create_all(engine)` runs at startup (in `app.py`'s startup event handler) and creates any tables that don't yet exist. It does **not** add new columns to existing tables.
 
-To handle this, `app.py` runs a list of `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements immediately after `db.create_all()`. This is safe to re-run on every startup — PostgreSQL's `IF NOT EXISTS` clause is a no-op if the column already exists. SQLite doesn't support `IF NOT EXISTS` on `ADD COLUMN`, so the migration block catches and logs the exception without crashing.
+To handle this, `app.py` runs a list of `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements immediately after table creation. This is safe to re-run on every startup — PostgreSQL's `IF NOT EXISTS` clause is a no-op if the column already exists. SQLite doesn't support `IF NOT EXISTS` on `ADD COLUMN`, so the migration block catches and logs the exception without crashing.
 
 **When adding a new column to an existing model:** add the column to `models.py` as usual, then add a corresponding `ALTER TABLE <table> ADD COLUMN IF NOT EXISTS <col> <type>` entry to the `_migrations` list in `app.py`. The column will be created on the next deploy.
 
@@ -282,8 +288,8 @@ _migrations = [
 | `SameSite=Lax` cookie | `auth.py` | Browser won't send cookie on cross-site requests — primary CSRF defence |
 | `X-Requested-With` CSRF header | `auth.py` + `index.html` | Secondary CSRF defence — all state-changing requests require this custom header, which browsers never attach automatically on cross-site requests |
 | bcrypt password hashing | `auth.py` | Passwords stored as bcrypt hashes with 12 rounds — slow enough to resist brute force |
-| Login rate limiting | `auth.py` | Max 10 failures per IP per 5 minutes, then 10-minute lockout — in-memory, per-worker |
-| Per-user AI rate limiting | `auth.py` | `/generate`: 20 req/10 min per user; `/replace`: 60 req/10 min per user — returns HTTP 429 with `retry_after` seconds |
+| Login rate limiting | `auth.py` | Max 10 failures per IP per 5 minutes, then 10-minute lockout — Redis-backed, shared across workers |
+| Per-user AI rate limiting | `auth.py` | `/generate`: 20 req/10 min per user; `/replace`: 60 req/10 min per user — Redis-backed, returns HTTP 429 with `retry_after` seconds |
 | Generic auth error messages | `auth.py` | "Invalid email or password" — never reveals whether the email exists |
 | HTTP security headers | `app.py` | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`, HSTS (production only) |
 | SSRF guard | `app.py` | `_fetch_static_map_as_base64()` only fetches from `https://maps.googleapis.com/` — blocks server-side request forgery |
@@ -360,25 +366,27 @@ Railway watches the `main` branch of the GitHub repository (`bluesman1971/Claude
 
 ### Startup sequence
 1. Railway builds the container from `runtime.txt` (Python 3.11.9) and installs `requirements.txt`
-2. Railway runs the command in `Procfile`:
+2. Railway runs the command in `Procfile` (make sure no **Start Command** override is set in the Railway dashboard — the dashboard field takes precedence over the Procfile):
    ```
-   gunicorn wsgi:application --workers 2 --threads 4 --worker-class gthread --bind 0.0.0.0:$PORT --timeout 120
+   gunicorn app:app -k uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.0:$PORT --timeout 120 --access-logfile - --error-logfile -
    ```
-3. Gunicorn imports `wsgi.py`, which imports `app.py` as `application`
-4. `app.py` module-level code runs: loads env vars, configures the DB, registers blueprints, creates tables if they don't exist, runs column migrations
-5. Gunicorn starts serving on the Railway-assigned `$PORT`
+3. Gunicorn starts 2 Uvicorn worker processes, each importing `app.py`
+4. FastAPI's `@app.on_event('startup')` handler runs: creates the `httpx.AsyncClient`, creates DB tables if they don't exist, runs column migrations, checks Redis connectivity
+5. Workers begin serving on the Railway-assigned `$PORT`
 
 ### Gunicorn configuration explained
-- `--workers 2` — 2 separate processes (each loads the full app)
-- `--threads 4` — 4 threads per worker (handles concurrent requests within each process)
-- `--worker-class gthread` — thread-based worker (required for `--threads` to work)
+- `app:app` — module `app.py`, object `app` (the FastAPI instance)
+- `-k uvicorn.workers.UvicornWorker` — async ASGI worker (replaces `--worker-class gthread`)
+- `--workers 2` — 2 separate async processes (each loads the full app)
 - `--timeout 120` — 120-second request timeout (needed because Claude API calls can take 30–60 seconds)
+- No `--threads` flag — Uvicorn workers are single-threaded async; threading is irrelevant
 
 ### Railway variables to set
 ```
 ANTHROPIC_API_KEY      = sk-ant-...
 JWT_SECRET_KEY         = (generate with: python -c "import secrets; print(secrets.token_hex(32))")
 DATABASE_URL           = postgresql://postgres.PROJECTREF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+REDIS_URL              = (set automatically by Railway Redis add-on)
 FLASK_ENV              = production
 GOOGLE_PLACES_API_KEY  = (optional)
 ```
@@ -403,13 +411,14 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and fill in ANTHROPIC_API_KEY and JWT_SECRET_KEY at minimum
 # DATABASE_URL defaults to SQLite (trip_master.db) if not set — fine for dev
+# REDIS_URL is optional locally — app falls back to in-memory if not set
 
 # 5. Create the first admin user
-flask create-user --role admin
+python manage.py create-user --role admin
 
 # 6. Run the development server
-python app.py
-# App runs at http://localhost:5001
+uvicorn app:app --reload
+# App runs at http://localhost:8000
 ```
 
 ---
@@ -419,7 +428,7 @@ python app.py
 ### Add a new staff user
 ```bash
 # In Railway shell (Railway → service → Shell):
-flask create-user --role staff
+python manage.py create-user --role staff
 ```
 
 ### Rotate the JWT secret key
@@ -448,10 +457,6 @@ Railway → your service → **Deployments** → click the active deployment →
 ---
 
 ## Known limitations and future work
-
-- **In-memory session store and cache** — `_session_store` and `_cache` in `app.py` are plain Python dicts. They reset on every deploy and are not shared between Gunicorn workers. For a multi-worker setup this can cause "session not found" errors if the `/finalize` request hits a different worker than `/generate`. The `/replace` endpoint works around this by always resolving trip parameters from the DB `Trip` record rather than the session store — but `/finalize` still uses the session store and could be affected. A Redis store (e.g. Railway Redis add-on) would fix this properly.
-
-- **In-memory rate limiters** — both the login rate limiter (`auth.py`) and the per-user AI endpoint limiter (`auth.py`) are plain in-memory dicts. They reset on every deploy and are not shared between Gunicorn workers. For a strictly enforced public deployment, back them with Redis (e.g. the Railway Redis add-on). For the current internal-staff use case they are adequate.
 
 - **Schema migrations are append-only** — the `_migrations` list in `app.py` handles adding new columns to existing tables automatically on startup. However, renaming or removing columns, adding constraints, or changing column types still requires manual intervention (run the SQL directly in the Supabase dashboard). For complex schema evolution, adopt Flask-Migrate / Alembic.
 

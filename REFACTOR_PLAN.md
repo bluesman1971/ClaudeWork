@@ -12,7 +12,7 @@
 
 ---
 
-## Phase 1 — Redis foundation (1–2 days)
+## Phase 1 — Redis foundation ✅ COMPLETE (deployed 2026-02-24)
 ### Fix the real production bug and remove all in-memory state
 
 **Why first:** Every other improvement (rate limiting, session continuity, caching) sits on top of this. Doing it now means every subsequent phase gets it for free.
@@ -57,7 +57,7 @@ Both `_login_attempts` and `_user_requests` become Redis sorted-set sliding wind
 
 ---
 
-## Phase 2 — FastAPI migration (3–5 days)
+## Phase 2 — FastAPI migration ✅ COMPLETE (deployed 2026-02-25)
 ### Replace Flask with an async framework; add Pydantic validation
 
 **Why second:** This is the biggest structural change. Doing it after Redis means we're migrating to a clean foundation, not carrying the in-memory state problems into the new framework.
@@ -126,67 +126,52 @@ web: gunicorn app:app -k uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.
 
 ---
 
-## Phase 3 — Task queue for /generate (2–3 days)
+## Phase 3 — Async job queue for /generate ✅ COMPLETE (deployed 2026-02-25)
 ### Decouple AI generation from the HTTP connection
 
 **Why third:** Requires Phase 2 (async FastAPI) to be in place for clean integration. Fixes the most visible UX pain point: the 30–60 second hanging request.
 
-**What we change:**
+**Approach chosen:** `asyncio.create_task()` + Redis job store — *not* Celery.
 
-### 3a. Add Celery + use existing Redis as broker
-```
-celery==5.4.0
-```
-Redis from Phase 1 doubles as the Celery broker and result backend. No new infrastructure.
+All scout work is async I/O (Claude API + httpx). `asyncio.create_task()` runs the coroutine concurrently in the same Uvicorn event loop without blocking other HTTP requests. No separate worker process is needed. Redis stores job state so any Gunicorn worker can answer polling requests.
 
-### 3b. Create `tasks.py`
-```python
-@celery.task(bind=True, max_retries=3)
-def run_scouts(self, job_id, location, duration, ...):
-    # Existing scout logic moves here verbatim
-    # Stores results to Redis keyed by job_id
-    ...
-```
+**What changed:**
 
-### 3c. Restructure `/generate`
-**Before:** `POST /generate` → waits 30–60s → returns full results
+### 3a. `POST /generate` — thin enqueue endpoint
+Returns `{ job_id }` in < 200 ms. Validates the request and checks the rate limit before queuing so bad requests are rejected immediately.
 
-**After:**
-```
-POST /generate   → returns { job_id: "uuid" } immediately (< 200ms)
-GET  /jobs/{id}  → returns { status: "pending"|"running"|"done"|"failed", results: {...} }
+### 3b. New `_run_scouts_background()` async function in `app.py`
+Full scout pipeline (geocode → parallel scouts → verification → retries → session store → DB save) runs as a background coroutine. Updates job state in Redis at each step so the polling endpoint always has fresh status.
+
+### 3c. New `GET /jobs/{job_id}` endpoint in `app.py`
+Returns the current job state:
+```json
+{ "status": "pending|running|done|failed",
+  "progress": 0-100,
+  "message":  "Generating recommendations for Paris…",
+  "results":  { ...full /generate response... },
+  "error":    null }
 ```
 
-The frontend switches from "wait for one big response" to a simple polling loop (every 2 seconds, show a live progress bar).
+### 3d. Job store helpers in `app.py`
+`_job_set()`, `_job_get()`, `_job_update()` — same Redis-with-in-memory-fallback pattern as session/cache helpers. Key: `job:{job_id}`, TTL: 1 hour.
 
-### 3d. Frontend polling update in `index.html`
-The existing `generateGuide()` function adds a small poll loop:
+### 3e. Frontend polling in `index.html`
+Added `sleep()` and `pollJobUntilDone(jobId)` functions. The form submit handler now does:
 ```javascript
-async function pollJob(jobId) {
-    while (true) {
-        const r = await apiFetch(`/jobs/${jobId}`);
-        if (r.status === 'done')   return r.results;
-        if (r.status === 'failed') throw new Error(r.error);
-        updateProgressBar(r.progress);  // 0-100
-        await sleep(2000);
-    }
-}
+// Step 1: submit — returns { job_id } immediately
+const { job_id } = await apiFetch('/generate', { method: 'POST', ... });
+// Step 2: poll until done
+const result = await pollJobUntilDone(job_id);
+showReviewScreen(result);   // same as before
 ```
-Everything else in the frontend (review screen, replace, finalize) is unchanged.
+A `<p id="loadingMessage">` element below the progress steps shows server-side status messages as they arrive.
 
-### 3e. Railway worker process
-Add a second process to `Procfile`:
-```
-web:    gunicorn app:app -k uvicorn.workers.UvicornWorker --workers 2 ...
-worker: celery -A tasks worker --loglevel=info --concurrency=4
-```
-Railway runs both automatically.
-
-**Files changed:** new `tasks.py`, `app.py` (slim /generate route), `index.html` (polling UI), `Procfile`, `requirements.txt`
-**Risk:** Medium-low. The Celery worker is additive — the HTTP routes still exist and can fall back to synchronous execution during testing.
-**Deploy:** Two Railway push steps — first deploy the new routes, then enable the worker process.
-
----
+**Files changed:** `app.py` (job helpers, background task, new endpoints), `index.html` (polling UI)
+**No Procfile change** — no extra Railway worker process needed.
+**No new dependency** — no Celery required.
+**Risk:** Low. Uses only standard Python asyncio. Falls back to in-memory job store if Redis is unreachable.
+**Deploy:** Single Railway push. Zero downtime.
 
 ## Phase 4 — Flask-Migrate / Alembic (half a day)
 ### Professional schema version control
@@ -329,9 +314,9 @@ Railway runs this before starting the web process.
 
 | Phase | Work | Risk | Outcome |
 |---|---|---|---|
-| 1 — Redis | 1–2 days | Low | Session store, cache, and rate limiters survive redeploys and work across workers |
-| 2 — FastAPI | 3–5 days | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
-| 3 — Task queue | 2–3 days | Medium-low | /generate returns instantly; consultants see a live progress bar |
+| 1 — Redis | ✅ done | Low | Session store, cache, and rate limiters survive redeploys and work across workers |
+| 2 — FastAPI | ✅ done | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
+| 3 — Async job queue | ✅ done | Low | /generate returns instantly; frontend polls /jobs/{id}; server streams status messages |
 | 4 — Alembic | 0.5 days | Low | Schema changes tracked in version control |
 | 5 — Tool use | 1 day | Low | Structured AI output; eliminates /replace parsing fragility |
 | 6 — Frontend split | 2–3 days | Low | Maintainable, testable JS; easy to add mobile or white-label surface later |
