@@ -556,6 +556,15 @@
             color: #27ae60;
         }
 
+        .loading-status {
+            font-size: 0.72rem;
+            color: var(--ink-2);
+            margin-top: 14px;
+            letter-spacing: 0.02em;
+            min-height: 1.2em;
+            text-align: center;
+        }
+
         /* ── RESULTS ── */
         .result-container {
             display: none;
@@ -1718,6 +1727,7 @@
             <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
             <div class="progress-step" id="step-building">🔍 Verifying Locations</div>
         </div>
+        <p id="loadingMessage" class="loading-status"></p>
     </div>
 
     <!-- REVIEW SCREEN -->
@@ -2500,6 +2510,45 @@
             });
         }
 
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        /**
+         * pollJobUntilDone — POST /generate now returns immediately with a job_id.
+         * This function polls GET /jobs/{job_id} every 2 seconds until the job
+         * status is 'done' (returns results) or 'failed' (throws an Error).
+         * Times out after 4 minutes to prevent infinite loops.
+         */
+        async function pollJobUntilDone(jobId) {
+            const MAX_POLLS = 120;   // 120 × 2 s = 4-minute ceiling
+            const msgEl = document.getElementById('loadingMessage');
+
+            for (let i = 0; i < MAX_POLLS; i++) {
+                await sleep(2000);
+
+                let resp, job;
+                try {
+                    resp = await apiFetch(`/jobs/${jobId}`);
+                    job  = await resp.json();
+                } catch (err) {
+                    throw new Error('Lost connection while generating. Please try again.');
+                }
+
+                if (!resp.ok) {
+                    throw new Error((job && job.error) || 'Job status check failed');
+                }
+
+                // Show server-reported status message below the progress steps
+                if (job.message && msgEl) msgEl.textContent = job.message;
+
+                if (job.status === 'done')   return job.results;
+                if (job.status === 'failed') throw new Error(job.error || 'Generation failed');
+                // 'pending' or 'running' — keep polling
+            }
+            throw new Error('Generation timed out after 4 minutes. Please try again.');
+        }
+
         document.getElementById('tripForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -2576,14 +2625,22 @@
             const clientId = document.getElementById('clientSelect').value;
             if (clientId) payload.client_id = parseInt(clientId, 10);
 
+            // Clear any previous status message
+            const msgEl = document.getElementById('loadingMessage');
+            if (msgEl) msgEl.textContent = '';
+
             try {
-                const response = await apiFetch('/generate', {
+                // Step 1: submit the job — returns immediately with { job_id }
+                const initResp = await apiFetch('/generate', {
                     method: 'POST',
                     body: JSON.stringify(payload)
                 });
+                const init = await initResp.json();
+                if (!initResp.ok) throw new Error(init.error || 'Failed to start generation');
 
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.error || 'Failed to generate guide');
+                // Step 2: poll until done (updates the status message on each tick)
+                const result = await pollJobUntilDone(init.job_id);
+
                 stopProgressAnimation(true);
                 // Refresh saved trips in background after successful generation
                 loadSavedTrips();

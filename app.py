@@ -44,7 +44,7 @@ from auth import (
     get_current_user,
 )
 from clients import clients_router
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 from models import Client, StaffUser, Trip, db
 from redis_client import get_redis
 from schemas import FinalizeRequest, GenerateRequest, ReplaceRequest
@@ -173,6 +173,9 @@ COLOR_PALETTES = {
 
 _cache: dict         = {}
 _session_store: dict = {}
+_jobs: dict          = {}   # job-state fallback when Redis is unreachable
+
+JOB_TTL_SECONDS = 3600      # 1 hour — same as session TTL
 
 # ---------------------------------------------------------------------------
 # HTTP client singleton (shared across requests)
@@ -314,6 +317,45 @@ def _session_get(session_id: str) -> dict | None:
     if entry and (time.time() - entry.get('ts', 0)) < SESSION_TTL_SECONDS:
         return entry
     return None
+
+
+# ---------------------------------------------------------------------------
+# Job store helpers (Redis + in-memory fallback)
+# ---------------------------------------------------------------------------
+
+def _job_set(job_id: str, payload: dict) -> None:
+    """Write (or overwrite) a job state record with a 1-hour TTL."""
+    r = get_redis()
+    if r is not None:
+        try:
+            r.setex(f'job:{job_id}', JOB_TTL_SECONDS, json.dumps(payload))
+            return
+        except Exception as exc:
+            logger.warning('Redis job SET error: %s', exc)
+    _jobs[job_id] = {**payload, '_ts': time.time()}
+
+
+def _job_get(job_id: str) -> dict | None:
+    r = get_redis()
+    if r is not None:
+        try:
+            raw = r.get(f'job:{job_id}')
+            if raw is not None:
+                return json.loads(raw)
+        except Exception as exc:
+            logger.warning('Redis job GET error: %s', exc)
+        return None
+    entry = _jobs.get(job_id)
+    if entry and (time.time() - entry.get('_ts', 0)) < JOB_TTL_SECONDS:
+        return {k: v for k, v in entry.items() if k != '_ts'}
+    return None
+
+
+def _job_update(job_id: str, fields: dict) -> None:
+    """Merge fields into an existing job record (read → modify → write)."""
+    existing = _job_get(job_id) or {}
+    existing.update(fields)
+    _job_set(job_id, existing)
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1001,253 @@ async def _run_single_scout(name, fn, args, kwargs, location, accommodation_coor
     if items and scout_cache_key:
         _set_cached(scout_cache_key, items)
     return items
+
+
+# ---------------------------------------------------------------------------
+# Background scout task (asyncio.create_task — runs concurrently with requests)
+# ---------------------------------------------------------------------------
+
+async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> None:
+    """
+    Full scout pipeline executed as a background asyncio coroutine.
+
+    Accepts a validated GenerateRequest dict (body.model_dump()) and the
+    current user's ID.  Updates job state in Redis throughout so any
+    worker can answer GET /jobs/{job_id} polling requests.
+    """
+    db_session = None
+    try:
+        _job_update(job_id, {'status': 'running', 'progress': 5, 'message': 'Starting…'})
+
+        # Own DB session — FastAPI's Depends() doesn't work outside a request
+        db_session = await run_in_threadpool(SessionLocal)
+
+        # ── Unpack validated params ───────────────────────────────────────────
+        location      = params['location']
+        duration      = params['duration']
+        budget        = params.get('budget') or 'Moderate'
+        distance      = params.get('distance') or 'Up to 30 minutes'
+        accommodation = params.get('accommodation')
+        pre_planned   = params.get('pre_planned')
+
+        include_photos      = params.get('include_photos', True)
+        include_dining      = params.get('include_dining', True)
+        include_attractions = params.get('include_attractions', True)
+
+        photos_per_day      = params.get('photos_per_day',      PHOTOS_PER_DAY)
+        restaurants_per_day = params.get('restaurants_per_day', RESTAURANTS_PER_DAY)
+        attractions_per_day = params.get('attractions_per_day', ATTRACTIONS_PER_DAY)
+
+        photo_interests = params.get('photo_interests') or ''
+        cuisines        = params.get('cuisines')        or ''
+        attraction_cats = params.get('attraction_cats') or ''
+        client_id       = params.get('client_id')
+
+        # ── Load client profile ───────────────────────────────────────────────
+        client_profile = None
+        if client_id is not None:
+            try:
+                cid       = int(client_id)
+                db_client = await run_in_threadpool(lambda: db_session.get(Client, cid))
+                if db_client and not db_client.is_deleted:
+                    client_profile = {k: v for k, v in {
+                        'home_city':            db_client.home_city            or '',
+                        'preferred_budget':     db_client.preferred_budget     or '',
+                        'travel_style':         db_client.travel_style         or '',
+                        'dietary_requirements': db_client.dietary_requirements or '',
+                        'notes':                db_client.notes                or '',
+                    }.items() if v}
+                    logger.info('BG job=%s: client profile loaded for id=%d', job_id[:8], cid)
+            except Exception as cp_exc:
+                logger.warning('BG job=%s: could not load client profile (id=%s): %s',
+                               job_id[:8], client_id, cp_exc)
+
+        _job_update(job_id, {'progress': 15, 'message': f'Generating recommendations for {location}…'})
+
+        logger.info('BG job=%s: %s %d days | photos=%s dining=%s attractions=%s',
+                    job_id[:8], location, duration,
+                    'ON' if include_photos else 'OFF',
+                    'ON' if include_dining else 'OFF',
+                    'ON' if include_attractions else 'OFF')
+
+        # ── Build scout task list ─────────────────────────────────────────────
+        scout_tasks = {}
+        if include_photos:
+            scout_tasks['photos'] = (
+                call_photo_scout,
+                (location, duration, photo_interests, distance),
+                {'per_day': photos_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
+            )
+        if include_dining:
+            scout_tasks['restaurants'] = (
+                call_restaurant_scout,
+                (location, duration, cuisines, budget, distance),
+                {'per_day': restaurants_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
+            )
+        if include_attractions:
+            scout_tasks['attractions'] = (
+                call_attraction_scout,
+                (location, duration, attraction_cats, budget, distance),
+                {'per_day': attractions_per_day, 'accommodation': accommodation,
+                 'pre_planned': pre_planned, 'client_profile': client_profile},
+            )
+
+        # ── Geocode accommodation ─────────────────────────────────────────────
+        accommodation_coords: tuple = (None, None)
+        if accommodation and PLACES_VERIFY_ENABLED:
+            _job_update(job_id, {'progress': 20, 'message': 'Geocoding accommodation…'})
+            accommodation_coords = await _geocode_accommodation(accommodation)
+
+        _job_update(job_id, {'progress': 25, 'message': f'Scouting {location}…'})
+
+        if PLACES_VERIFY_ENABLED:
+            logger.info('BG job=%s: Places verification enabled', job_id[:8])
+        else:
+            logger.info('BG job=%s: Places verification disabled (no API key)', job_id[:8])
+
+        # ── Initial parallel scout run ────────────────────────────────────────
+        results = {'photos': [], 'restaurants': [], 'attractions': []}
+        raw_results = await asyncio.gather(
+            *[_run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
+              for name, (fn, args, kwargs) in scout_tasks.items()],
+            return_exceptions=True,
+        )
+        for (name, _), result in zip(scout_tasks.items(), raw_results):
+            if isinstance(result, Exception):
+                logger.error("BG job=%s scout '%s': initial run failed — %s", job_id[:8], name, result)
+                results[name] = []
+            else:
+                results[name] = result
+                logger.info("BG job=%s scout '%s': %d item(s)", job_id[:8], name, len(result))
+
+        # ── Retry scouts that returned 0 items ────────────────────────────────
+        for attempt in range(1, SCOUT_MAX_RETRIES + 1):
+            empty_scouts = [name for name in scout_tasks if not results[name]]
+            if not empty_scouts:
+                break
+            logger.warning('BG job=%s: retry %d — empty: %s', job_id[:8], attempt, empty_scouts)
+            _job_update(job_id, {'message': f'Retrying {", ".join(empty_scouts)} scout…'})
+            await asyncio.sleep(SCOUT_RETRY_DELAY)
+            for name in empty_scouts:
+                fn, args, kwargs = scout_tasks[name]
+                try:
+                    items         = await _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
+                    results[name] = items
+                    logger.info("BG job=%s scout '%s': retry %d returned %d item(s)",
+                                job_id[:8], name, attempt, len(items))
+                except Exception as exc:
+                    logger.error("BG job=%s scout '%s': retry %d failed — %s",
+                                 job_id[:8], name, attempt, exc)
+
+        # ── Collect warnings for still-empty scouts ───────────────────────────
+        warnings = []
+        for name in scout_tasks:
+            if not results[name]:
+                label = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}[name]
+                warnings.append(
+                    f'{label} recommendations could not be generated after '
+                    f'{SCOUT_MAX_RETRIES + 1} attempt(s). You can proceed without this section or try again.'
+                )
+                logger.warning("BG job=%s scout '%s': 0 results after %d attempt(s)",
+                               job_id[:8], name, SCOUT_MAX_RETRIES + 1)
+
+        if not any(results[n] for n in scout_tasks):
+            raise ValueError('No recommendations could be generated. Please try again.')
+
+        colors = get_color_palette(location)
+        _job_update(job_id, {'progress': 80, 'message': 'Saving trip…'})
+
+        # ── Store session ─────────────────────────────────────────────────────
+        _evict_sessions()
+        session_id = str(uuid.uuid4())
+        _session_set(session_id, {
+            'location':    location,
+            'duration':    duration,
+            'colors':      colors,
+            'photos':      results['photos'],
+            'restaurants': results['restaurants'],
+            'attractions': results['attractions'],
+        })
+
+        # ── Save draft trip to DB ─────────────────────────────────────────────
+        trip_id = None
+        try:
+            def _save_trip():
+                trip = Trip(
+                    client_id            = client_id,
+                    created_by_id        = user_id,
+                    title                = f"{location} — {duration} day{'s' if duration != 1 else ''}",
+                    status               = 'draft',
+                    location             = location,
+                    duration             = duration,
+                    budget               = budget,
+                    distance             = distance,
+                    include_photos       = include_photos,
+                    include_dining       = include_dining,
+                    include_attractions  = include_attractions,
+                    photos_per_day       = photos_per_day,
+                    restaurants_per_day  = restaurants_per_day,
+                    attractions_per_day  = attractions_per_day,
+                    photo_interests      = photo_interests or None,
+                    cuisines             = cuisines or None,
+                    attraction_cats      = attraction_cats or None,
+                    accommodation        = accommodation,
+                    raw_photos           = json.dumps(results['photos']),
+                    raw_restaurants      = json.dumps(results['restaurants']),
+                    raw_attractions      = json.dumps(results['attractions']),
+                    colors               = json.dumps(colors),
+                    session_id           = session_id,
+                )
+                db_session.add(trip)
+                db_session.commit()
+                db_session.refresh(trip)
+                return trip.id
+
+            trip_id = await run_in_threadpool(_save_trip)
+            logger.info('BG job=%s: trip draft saved id=%d', job_id[:8], trip_id)
+        except Exception as db_exc:
+            logger.error('BG job=%s: failed to save trip to DB: %s', job_id[:8], db_exc)
+
+        # ── Mark complete ─────────────────────────────────────────────────────
+        _job_set(job_id, {
+            'status':   'done',
+            'progress': 100,
+            'message':  'Done!',
+            'results':  {
+                'status':           'success',
+                'session_id':       session_id,
+                'trip_id':          trip_id,
+                'location':         location,
+                'duration':         duration,
+                'colors':           colors,
+                'photos':           results['photos'],
+                'restaurants':      results['restaurants'],
+                'attractions':      results['attractions'],
+                'photo_count':      len(results['photos']),
+                'restaurant_count': len(results['restaurants']),
+                'attraction_count': len(results['attractions']),
+                'warnings':         warnings,
+                'model':            SCOUT_MODEL_LABEL,
+            },
+        })
+        logger.info('BG job=%s: complete — %d photos, %d restaurants, %d attractions',
+                    job_id[:8], len(results['photos']), len(results['restaurants']),
+                    len(results['attractions']))
+
+    except Exception as exc:
+        logger.error('BG job=%s failed: %s', job_id, exc, exc_info=True)
+        _job_set(job_id, {
+            'status':   'failed',
+            'progress': 0,
+            'message':  'Failed',
+            'error':    'An unexpected error occurred. Please try again.',
+        })
+
+    finally:
+        if db_session is not None:
+            await run_in_threadpool(db_session.close)
 
 
 # ---------------------------------------------------------------------------
@@ -1931,245 +2220,68 @@ async def health():
 @app.post('/generate')
 async def generate_trip_guide(
     body: GenerateRequest,
-    request: Request,
-    db_session: Session = Depends(get_db),
     current_user: StaffUser = Depends(get_current_user),
 ):
-    """Generate a complete trip guide (requires login)."""
-    try:
-        # Per-user rate limit
-        allowed, retry_after = check_user_rate_limit(current_user.id, 'generate')
-        if not allowed:
-            logger.warning('Rate limit hit: user_id=%d /generate retry_after=%ds',
-                           current_user.id, retry_after)
-            raise HTTPException(
-                status_code=429,
-                detail=f'Too many requests. Please wait {retry_after} seconds before trying again.',
-            )
+    """
+    Enqueue a scout job and return a job_id immediately (< 200 ms).
 
-        location      = body.location
-        duration      = body.duration
-        budget        = body.budget or 'Moderate'
-        distance      = body.distance or 'Up to 30 minutes'
-        accommodation = body.accommodation
-        pre_planned   = body.pre_planned
-
-        include_photos      = body.include_photos
-        include_dining      = body.include_dining
-        include_attractions = body.include_attractions
-
-        photos_per_day      = body.photos_per_day
-        restaurants_per_day = body.restaurants_per_day
-        attractions_per_day = body.attractions_per_day
-
-        photo_interests = body.photo_interests or ''
-        cuisines        = body.cuisines        or ''
-        attraction_cats = body.attraction_cats or ''
-
-        # ── Load client profile ──────────────────────────────────────────────
-        client_profile = None
-        if body.client_id is not None:
-            try:
-                cid       = int(body.client_id)
-                db_client = await run_in_threadpool(lambda: db_session.get(Client, cid))
-                if db_client and not db_client.is_deleted:
-                    client_profile = {k: v for k, v in {
-                        'home_city':            db_client.home_city            or '',
-                        'preferred_budget':     db_client.preferred_budget     or '',
-                        'travel_style':         db_client.travel_style         or '',
-                        'dietary_requirements': db_client.dietary_requirements or '',
-                        'notes':                db_client.notes                or '',
-                    }.items() if v}
-                    logger.info('Client profile loaded for id=%d: %s', cid, list(client_profile.keys()))
-            except Exception as cp_exc:
-                logger.warning('Could not load client profile (id=%s): %s', body.client_id, cp_exc)
-
-        logger.info(
-            'Generating trip guide for %s, %d days | photos=%s(%d/d) dining=%s(%d/d) '
-            'attractions=%s(%d/d) | accommodation=%s | pre_planned=%s | client_profile=%s',
-            location, duration,
-            'ON' if include_photos else 'OFF', photos_per_day,
-            'ON' if include_dining else 'OFF', restaurants_per_day,
-            'ON' if include_attractions else 'OFF', attractions_per_day,
-            'yes' if accommodation else 'no',
-            'yes' if pre_planned   else 'no',
-            'yes' if client_profile else 'no',
+    The client polls GET /jobs/{job_id} every 2 seconds until status == 'done',
+    then uses the returned results exactly as it used to use the direct response.
+    Requires login.
+    """
+    # Per-user rate limit — checked before queueing so we don't waste resources
+    allowed, retry_after = check_user_rate_limit(current_user.id, 'generate')
+    if not allowed:
+        logger.warning('Rate limit hit: user_id=%d /generate retry_after=%ds',
+                       current_user.id, retry_after)
+        raise HTTPException(
+            status_code=429,
+            detail=f'Too many requests. Please wait {retry_after} seconds before trying again.',
         )
 
-        # ── Build scout task list ────────────────────────────────────────────
-        scout_tasks = {}
-        if include_photos:
-            scout_tasks['photos'] = (
-                call_photo_scout,
-                (location, duration, photo_interests, distance),
-                {'per_day': photos_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
-        if include_dining:
-            scout_tasks['restaurants'] = (
-                call_restaurant_scout,
-                (location, duration, cuisines, budget, distance),
-                {'per_day': restaurants_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
-        if include_attractions:
-            scout_tasks['attractions'] = (
-                call_attraction_scout,
-                (location, duration, attraction_cats, budget, distance),
-                {'per_day': attractions_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
-        logger.info('Active scout tasks: %s', list(scout_tasks.keys()))
+    job_id = str(uuid.uuid4())
+    _job_set(job_id, {
+        'status':   'pending',
+        'progress': 0,
+        'message':  'Queued…',
+        'results':  None,
+        'error':    None,
+    })
 
-        # ── Geocode accommodation ────────────────────────────────────────────
-        accommodation_coords: tuple = (None, None)
-        if accommodation and PLACES_VERIFY_ENABLED:
-            accommodation_coords = await _geocode_accommodation(accommodation)
-            if accommodation_coords[0] is not None:
-                logger.info('Accommodation geocoded: (%.5f, %.5f)', *accommodation_coords)
-            else:
-                logger.info('Accommodation geocoding returned no result — travel_time from Claude')
+    # asyncio.create_task runs the coroutine concurrently in the same event loop.
+    # Because all scout work is async I/O (Claude API + httpx), it does not block
+    # the event loop — other HTTP requests are served normally while scouts run.
+    asyncio.create_task(
+        _run_scouts_background(job_id, body.model_dump(), current_user.id)
+    )
 
-        if PLACES_VERIFY_ENABLED:
-            logger.info('Google Places verification enabled — running scout + verify in one step')
-        else:
-            logger.info('Google Places verification disabled (no API key)')
+    logger.info('Job %s queued for %s %d days (user_id=%d)',
+                job_id[:8], body.location, body.duration, current_user.id)
+    return {'job_id': job_id}
 
-        # ── Initial parallel scout run (asyncio.gather) ──────────────────────
-        results = {'photos': [], 'restaurants': [], 'attractions': []}
-        errors  = []
 
-        raw_results = await asyncio.gather(
-            *[_run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
-              for name, (fn, args, kwargs) in scout_tasks.items()],
-            return_exceptions=True,
+@app.get('/jobs/{job_id}')
+async def poll_job(
+    job_id: str,
+    current_user: StaffUser = Depends(get_current_user),
+):
+    """
+    Poll the status of a background scout job (requires login).
+
+    Returns:
+        { status: 'pending'|'running'|'done'|'failed',
+          progress: 0–100,
+          message:  str,
+          results:  {...} | null,   # present only when status == 'done'
+          error:    str   | null }  # present only when status == 'failed'
+    """
+    job = _job_get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail='Job not found or expired. Please generate a new guide.',
         )
-        for (name, _), result in zip(scout_tasks.items(), raw_results):
-            if isinstance(result, Exception):
-                logger.error("Scout '%s': initial run failed — %s", name, result)
-                errors.append(f'{name}: {result}')
-                results[name] = []
-            else:
-                results[name] = result
-                logger.info("Scout '%s': initial run returned %d item(s)", name, len(result))
-
-        # ── Retry scouts that returned 0 items ───────────────────────────────
-        for attempt in range(1, SCOUT_MAX_RETRIES + 1):
-            empty_scouts = [name for name in scout_tasks if not results[name]]
-            if not empty_scouts:
-                break
-
-            logger.warning('Retry attempt %d/%d — scouts with 0 results: %s',
-                           attempt, SCOUT_MAX_RETRIES, empty_scouts)
-            await asyncio.sleep(SCOUT_RETRY_DELAY)
-
-            for name in empty_scouts:
-                fn, args, kwargs = scout_tasks[name]
-                try:
-                    items          = await _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
-                    results[name]  = items
-                    logger.info("Scout '%s': retry %d returned %d item(s)", name, attempt, len(items))
-                except Exception as exc:
-                    logger.error("Scout '%s': retry %d failed — %s", name, attempt, exc)
-
-        # ── Warnings for scouts still empty after retries ─────────────────────
-        warnings = []
-        for name in scout_tasks:
-            if not results[name]:
-                label = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}[name]
-                warnings.append(
-                    f'{label} recommendations could not be generated for this destination '
-                    f'after {SCOUT_MAX_RETRIES + 1} attempt(s). '
-                    f'You can proceed without this section or try again.'
-                )
-                logger.warning("Scout '%s': 0 results after %d attempt(s) — surfacing warning",
-                               name, SCOUT_MAX_RETRIES + 1)
-
-        # Hard fail if every enabled scout is still empty
-        if not any(results[n] for n in scout_tasks):
-            raise HTTPException(
-                status_code=500,
-                detail='No recommendations could be generated. Please try again.',
-            )
-
-        colors = get_color_palette(location)
-
-        # ── Store session ─────────────────────────────────────────────────────
-        _evict_sessions()
-        session_id = str(uuid.uuid4())
-        _session_set(session_id, {
-            'location':    location,
-            'duration':    duration,
-            'colors':      colors,
-            'photos':      results['photos'],
-            'restaurants': results['restaurants'],
-            'attractions': results['attractions'],
-        })
-        logger.info('Session %s created — %d photos, %d restaurants, %d attractions',
-                    session_id[:8], len(results['photos']), len(results['restaurants']), len(results['attractions']))
-
-        # ── Save draft trip to DB ─────────────────────────────────────────────
-        trip_client_id = body.client_id
-        trip_id        = None
-        try:
-            def _save_trip():
-                trip = Trip(
-                    client_id            = trip_client_id,
-                    created_by_id        = current_user.id,
-                    title                = f"{location} — {duration} day{'s' if duration != 1 else ''}",
-                    status               = 'draft',
-                    location             = location,
-                    duration             = duration,
-                    budget               = budget,
-                    distance             = distance,
-                    include_photos       = include_photos,
-                    include_dining       = include_dining,
-                    include_attractions  = include_attractions,
-                    photos_per_day       = photos_per_day,
-                    restaurants_per_day  = restaurants_per_day,
-                    attractions_per_day  = attractions_per_day,
-                    photo_interests      = photo_interests or None,
-                    cuisines             = cuisines or None,
-                    attraction_cats      = attraction_cats or None,
-                    accommodation        = accommodation,
-                    raw_photos           = json.dumps(results['photos']),
-                    raw_restaurants      = json.dumps(results['restaurants']),
-                    raw_attractions      = json.dumps(results['attractions']),
-                    colors               = json.dumps(colors),
-                    session_id           = session_id,
-                )
-                db_session.add(trip)
-                db_session.commit()
-                db_session.refresh(trip)
-                return trip.id
-
-            trip_id = await run_in_threadpool(_save_trip)
-            logger.info('Trip draft saved: id=%d session=%s', trip_id, session_id[:8])
-        except Exception as db_exc:
-            logger.error('Failed to save trip draft to DB: %s', db_exc)
-
-        return {
-            'status':           'success',
-            'session_id':       session_id,
-            'trip_id':          trip_id,
-            'location':         location,
-            'duration':         duration,
-            'colors':           colors,
-            'photos':           results['photos'],
-            'restaurants':      results['restaurants'],
-            'attractions':      results['attractions'],
-            'photo_count':      len(results['photos']),
-            'restaurant_count': len(results['restaurants']),
-            'attraction_count': len(results['attractions']),
-            'warnings':         warnings,
-            'model':            SCOUT_MODEL_LABEL,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error('Unhandled error in /generate: %s', exc, exc_info=True)
-        raise HTTPException(status_code=500, detail='An unexpected error occurred. Please try again.')
+    return job
 
 
 @app.post('/finalize')

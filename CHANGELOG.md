@@ -4,6 +4,38 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 3] Async job queue for /generate — 2026-02-25
+
+### What changed
+`POST /generate` now returns a `{ job_id }` immediately (< 200 ms) instead of blocking for 30–60 seconds while Claude runs. The frontend polls `GET /jobs/{job_id}` every 2 seconds until the job is done, then proceeds exactly as before (review screen, replace, finalize).
+
+### Why asyncio instead of Celery
+All scout work is async I/O (Claude API + httpx). `asyncio.create_task()` runs the background coroutine concurrently in the same Uvicorn event loop — it never blocks other HTTP requests. No extra process, no new dependency, no Procfile change needed. Redis stores job state so any Gunicorn worker can answer polling requests.
+
+### New API endpoints
+| Method | Path | Description |
+|---|---|---|
+| `POST /generate` | (modified) | Enqueues scout job, returns `{ job_id }` in < 200 ms |
+| `GET /jobs/{job_id}` | (new) | Returns `{ status, progress, message, results, error }` |
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `app.py` | `_job_set`, `_job_get`, `_job_update` helpers; `_run_scouts_background()` async function; thin `POST /generate`; new `GET /jobs/{job_id}` |
+| `index.html` | `sleep()`, `pollJobUntilDone()` functions; form submit uses two-step submit+poll; `<p id="loadingMessage">` shows server status messages |
+
+### No changes to
+- `Procfile` — no Celery worker process needed
+- `requirements.txt` — no new packages
+- All other routes (`/finalize`, `/replace`, `/trips`, `/clients`) — unchanged
+- Database schema — unchanged
+
+### Migration notes
+- No action needed. The new endpoints are additive and backwards-compatible.
+- Existing sessions stored in Redis are unaffected.
+
+---
+
 ## [Phase 2] FastAPI Migration — 2026-02-25
 
 ### What changed
