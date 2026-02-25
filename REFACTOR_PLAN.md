@@ -12,7 +12,7 @@
 
 ---
 
-## Phase 1 — Redis foundation (1–2 days)
+## Phase 1 — Redis foundation ✅ COMPLETE (deployed 2026-02-24)
 ### Fix the real production bug and remove all in-memory state
 
 **Why first:** Every other improvement (rate limiting, session continuity, caching) sits on top of this. Doing it now means every subsequent phase gets it for free.
@@ -57,7 +57,7 @@ Both `_login_attempts` and `_user_requests` become Redis sorted-set sliding wind
 
 ---
 
-## Phase 2 — FastAPI migration (3–5 days)
+## Phase 2 — FastAPI migration ✅ COMPLETE (deployed 2026-02-25)
 ### Replace Flask with an async framework; add Pydantic validation
 
 **Why second:** This is the biggest structural change. Doing it after Redis means we're migrating to a clean foundation, not carrying the in-memory state problems into the new framework.
@@ -329,8 +329,8 @@ Railway runs this before starting the web process.
 
 | Phase | Work | Risk | Outcome |
 |---|---|---|---|
-| 1 — Redis | 1–2 days | Low | Session store, cache, and rate limiters survive redeploys and work across workers |
-| 2 — FastAPI | 3–5 days | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
+| 1 — Redis | ✅ done | Low | Session store, cache, and rate limiters survive redeploys and work across workers |
+| 2 — FastAPI | ✅ done | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
 | 3 — Task queue | 2–3 days | Medium-low | /generate returns instantly; consultants see a live progress bar |
 | 4 — Alembic | 0.5 days | Low | Schema changes tracked in version control |
 | 5 — Tool use | 1 day | Low | Structured AI output; eliminates /replace parsing fragility |
