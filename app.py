@@ -219,22 +219,8 @@ async def shutdown():
 
 
 def _init_db():
-    """Create all tables and run ADD COLUMN migrations. Called once at startup."""
+    """Create all tables if they don't exist. Schema migrations are managed by Alembic."""
     db.metadata.create_all(engine)
-
-    migrations = [
-        'ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT',
-        'ALTER TABLE trips ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)',
-    ]
-    try:
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            for sql in migrations:
-                conn.execute(text(sql))
-            conn.commit()
-    except Exception as exc:
-        # SQLite doesn't support IF NOT EXISTS on ADD COLUMN
-        logger.warning('Column migration skipped (likely SQLite): %s', exc)
 
 
 # ---------------------------------------------------------------------------

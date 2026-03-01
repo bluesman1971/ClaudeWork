@@ -4,6 +4,43 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 4] Alembic schema migrations — 2026-03-01
+
+### What changed
+Added Alembic for proper schema version control. All future column additions go through `alembic revision --autogenerate` instead of the manual `ALTER TABLE IF NOT EXISTS` list that was in `app.py`.
+
+### New files
+| File | Purpose |
+|---|---|
+| `alembic.ini` | Alembic config — script location, logging. DB URL is set programmatically from `DATABASE_URL` env var |
+| `migrations/env.py` | Alembic environment — imports `db.metadata` from `models.py` for autogenerate; reads `DATABASE_URL`; handles `postgres://` → `postgresql://` rewrite |
+| `migrations/versions/5d6c6ab024b5_initial_schema.py` | Baseline migration capturing all three tables (`staff_users`, `clients`, `trips`) with all columns, indexes, and foreign keys |
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `requirements.txt` | Added `alembic==1.14.0` |
+| `app.py` | `_init_db()` — removed `migrations` list and the `ALTER TABLE` loop; just `db.metadata.create_all(engine)` now |
+| `Procfile` | Added `release: alembic upgrade head` — Railway runs this before the web process on every deploy |
+
+### How to add a future schema change
+```bash
+# 1. Edit models.py (add/modify Column)
+# 2. Generate migration
+alembic revision --autogenerate -m "add foo column to trips"
+# 3. Review the generated file in migrations/versions/
+# 4. Apply locally
+alembic upgrade head
+# 5. Push — Railway release phase runs alembic upgrade head automatically
+```
+
+### Migration notes
+- No manual action needed on Railway — the `release` phase runs `alembic upgrade head` before every deploy.
+- Existing production data is unaffected. Alembic stamps the current schema revision on first run.
+- For local dev: `alembic upgrade head` after cloning. SQLite default is used if `DATABASE_URL` is not set.
+
+---
+
 ## [Phase 3] Async job queue for /generate — 2026-02-25
 
 ### What changed
