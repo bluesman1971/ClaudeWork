@@ -173,7 +173,7 @@ A `<p id="loadingMessage">` element below the progress steps shows server-side s
 **Risk:** Low. Uses only standard Python asyncio. Falls back to in-memory job store if Redis is unreachable.
 **Deploy:** Single Railway push. Zero downtime.
 
-## Phase 4 — Flask-Migrate / Alembic (half a day)
+## Phase 4 — Alembic ✅ COMPLETE (deployed 2026-03-01)
 ### Professional schema version control
 
 **Why fourth:** Low risk, low urgency, but needs to happen before the schema grows further. Best done after Phase 2 so we're setting it up in the FastAPI context.
@@ -317,7 +317,7 @@ Railway runs this before starting the web process.
 | 1 — Redis | ✅ done | Low | Session store, cache, and rate limiters survive redeploys and work across workers |
 | 2 — FastAPI | ✅ done | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
 | 3 — Async job queue | ✅ done | Low | /generate returns instantly; frontend polls /jobs/{id}; server streams status messages |
-| 4 — Alembic | 0.5 days | Low | Schema changes tracked in version control |
+| 4 — Alembic | ✅ done | Low | Schema changes tracked in version control; `release: alembic upgrade head` in Procfile |
 | 5 — Tool use | 1 day | Low | Structured AI output; eliminates /replace parsing fragility |
 | 6 — Frontend split | 2–3 days | Low | Maintainable, testable JS; easy to add mobile or white-label surface later |
 | **Total** | **~2.5 weeks** | | **Production-grade, future-proof architecture** |
