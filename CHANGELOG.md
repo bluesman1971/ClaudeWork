@@ -4,6 +4,43 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 6] Frontend split — 2026-03-05
+
+### What changed
+The 2721-line monolithic `index.html` has been split into a proper `frontend/` directory using native ES modules (no build step required). The HTML, CSS, and JavaScript are now in separate, logical files served directly by FastAPI.
+
+### New files
+| File | Purpose |
+|---|---|
+| `frontend/index.html` | HTML shell — all markup, no inline CSS or JS |
+| `frontend/src/styles/main.css` | All CSS (1388 lines) extracted from `index.html` |
+| `frontend/src/state.js` | Shared mutable state object + constants |
+| `frontend/src/api.js` | `apiFetch`, `checkAuth`, `handleLogin`, `handleLogout` |
+| `frontend/src/form.js` | Form controls, progress animation, `resetForm`, `showError` |
+| `frontend/src/clients.js` | Client CRM: list, create modal |
+| `frontend/src/review.js` | Review screen: toggle, bulk select, edit panel, replace |
+| `frontend/src/trips.js` | Saved trips panel: list, load, toggle |
+| `frontend/src/finalize.js` | Final guide generation and display |
+| `frontend/src/generate.js` | Form submit handler and job polling |
+| `frontend/src/main.js` | Entry point: imports all modules, `window.*` exports, `checkAuth()` bootstrap |
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `app.py` | `@app.get('/')` now serves `frontend/index.html`; added `app.mount('/src', StaticFiles(...))` to serve ES modules |
+
+### Architecture decisions
+- **Native ES modules, no Vite**: `<script type="module" src="/src/main.js">` — zero build infrastructure, no Node.js on Railway.
+- **Shared state via object**: `state.js` exports a single mutable object; all modules mutate its properties directly (ES `export let` bindings are read-only from other modules).
+- **Circular dep resolution**: `api.js` fires DOM `CustomEvent('auth:success')` / `CustomEvent('auth:logout')` instead of importing clients/trips; `finalize.js` uses a dynamic `import('./trips.js')` to avoid the `trips ↔ finalize` static cycle.
+- **Window exports**: All functions called from inline `onclick` handlers or dynamically generated HTML strings are assigned to `window.*` in `main.js`.
+
+### Migration notes
+- `index.html` in the root is retained for backwards compatibility but is no longer served. It can be archived or deleted.
+- No database, environment, or API changes. The frontend/backend contract is identical.
+
+---
+
 ## [Phase 5] Claude tool use for structured scout output — 2026-03-05
 
 ### What changed

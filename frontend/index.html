@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trip Master — Bespoke Travel Guides</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+
+    <!-- LOGIN SCREEN (shown when not authenticated) -->
+    <div class="login-screen" id="loginScreen">
+        <div class="login-box">
+            <div class="login-brand">Trip Master</div>
+            <div class="login-kicker">Staff Portal &middot; Sign In</div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="login-field">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" placeholder="you@company.com" required autocomplete="username">
+                </div>
+                <div class="login-field">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
+                <div class="login-error" id="loginError"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- CLIENT MODAL (create new client) -->
+    <div class="modal-overlay" id="clientModal">
+        <div class="modal-box">
+            <button class="modal-close" onclick="closeClientModal()" title="Close">&times;</button>
+            <div class="modal-title">New Client</div>
+            <form id="clientForm" onsubmit="saveNewClient(event)">
+                <div class="modal-field">
+                    <label>Full Name *</label>
+                    <input type="text" id="cName" placeholder="e.g., Jane Smith" required>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Email</label>
+                        <input type="email" id="cEmail" placeholder="jane@company.com">
+                    </div>
+                    <div class="modal-field">
+                        <label>Phone</label>
+                        <input type="tel" id="cPhone" placeholder="+1 555 0100">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Company</label>
+                        <input type="text" id="cCompany" placeholder="Acme Corp">
+                    </div>
+                    <div class="modal-field">
+                        <label>Home City</label>
+                        <input type="text" id="cHomeCity" placeholder="New York, NY">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Budget Preference</label>
+                        <select id="cBudget">
+                            <option value="">Unspecified</option>
+                            <option value="budget">Budget</option>
+                            <option value="moderate">Moderate</option>
+                            <option value="upscale">Upscale</option>
+                            <option value="luxury">Luxury</option>
+                        </select>
+                    </div>
+                    <div class="modal-field">
+                        <label>Travel Style</label>
+                        <input type="text" id="cTravelStyle" placeholder="e.g., Adventure, Cultural">
+                    </div>
+                </div>
+                <div class="modal-field">
+                    <label>Dietary Requirements</label>
+                    <input type="text" id="cDietary" placeholder="e.g., Vegetarian, nut allergy, no shellfish, halal">
+                </div>
+                <div class="modal-field">
+                    <label>Notes</label>
+                    <textarea id="cNotes" placeholder="Any important preferences or context…"></textarea>
+                </div>
+                <div class="modal-field">
+                    <label>Tags (comma separated)</label>
+                    <input type="text" id="cTags" placeholder="e.g., VIP, Annual, Photography">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="modal-btn" onclick="closeClientModal()">Cancel</button>
+                    <button type="submit" class="modal-btn primary" id="saveClientBtn">Save Client</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MASTHEAD -->
+    <header class="masthead">
+        <div class="masthead-brand">Trip Master</div>
+        <div class="masthead-user" id="mastheadUser" style="display:none">
+            <span class="masthead-user-name">Signed in as <strong id="mastheadUserName"></strong></span>
+            <button class="masthead-btn" onclick="openTripsPanel()" title="View saved trips">Saved Trips</button>
+            <button class="masthead-btn" onclick="handleLogout()">Sign Out</button>
+        </div>
+        <div class="masthead-issue" id="mastheadIssue">AI Travel Intelligence &middot; Est. 2025</div>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero-spread">
+        <div class="hero-text">
+            <p class="kicker">Bespoke Travel Guides</p>
+            <h1 class="hero-headline">The world<br>is <em>yours</em><br>to explore.</h1>
+            <p class="hero-dek">Photography locations, curated restaurants, and the attractions worth your time — all generated in under a minute, tailored to you.</p>
+            <button class="hero-cta" onclick="document.querySelector('.form-wrap').scrollIntoView({behavior:'smooth'})">
+                Build your guide
+                <span class="hero-cta-arrow"></span>
+            </button>
+        </div>
+        <div class="hero-visual">
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="100" cy="100" r="90" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="60" stroke="#1a1a1a" stroke-width="1"/>
+                <circle cx="100" cy="100" r="30" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="100" y1="10" x2="100" y2="190" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="10" y1="100" x2="190" y2="100" stroke="#1a1a1a" stroke-width="1"/>
+                <line x1="36" y1="36" x2="164" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <line x1="164" y1="36" x2="36" y2="164" stroke="#1a1a1a" stroke-width="0.5"/>
+                <polygon points="100,10 106,95 100,100 94,95" fill="#1a1a1a"/>
+                <polygon points="100,190 94,105 100,100 106,105" fill="#1a1a1a" opacity="0.3"/>
+            </svg>
+            <span class="hero-visual-label">Your compass awaits</span>
+        </div>
+    </section>
+
+    <!-- FORM -->
+    <section class="form-wrap">
+        <div class="form-header">
+            <div class="form-issue-number">01</div>
+            <div class="form-title-group">
+                <h2>Plan Your Journey</h2>
+                <p>Tell us about your trip and we'll craft your guide.</p>
+            </div>
+        </div>
+
+        <!-- Saved trips panel (collapsible) -->
+        <button type="button" class="trips-panel-toggle" id="tripsPanelToggle" onclick="toggleTripsPanel()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Saved Trips
+            <span id="tripsPanelCount" style="font-size:0.6rem;color:var(--rule)"></span>
+            <svg class="trips-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="trips-panel" id="tripsPanel">
+            <div class="trips-panel-inner" id="tripsPanelInner">
+                <div class="trips-empty">Loading trips…</div>
+            </div>
+        </div>
+
+        <form id="tripForm">
+
+            <!-- Client selector -->
+            <div class="client-field-wrap">
+                <div class="client-field-label">
+                    <span>Client (optional)</span>
+                    <div class="client-field-actions">
+                        <button type="button" class="client-action-btn" onclick="openClientModal()">+ New Client</button>
+                        <span style="color:var(--rule);font-size:0.62rem;">/</span>
+                        <button type="button" class="client-action-btn" onclick="refreshClientList()">Refresh</button>
+                    </div>
+                </div>
+                <select id="clientSelect" class="client-select">
+                    <option value="">— No client selected —</option>
+                </select>
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="location">Destination</label>
+                    <input type="text" id="location" placeholder="e.g., Barcelona, Spain" required>
+                </div>
+                <div class="field">
+                    <label for="duration">Duration (1–14 days)</label>
+                    <input type="number" id="duration" min="1" max="14" value="3" required>
+                </div>
+            </div>
+
+            <div class="field-row">
+                <div class="field" style="grid-column: 1 / -1;">
+                    <label for="accommodation">Accommodation Address <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — improves distance &amp; logistics advice)</span></label>
+                    <input type="text" id="accommodation" placeholder="e.g., Hotel Arts, Carrer de la Marina 19-21, Barcelona">
+                </div>
+            </div>
+
+            <div class="field-row">
+                <div class="field" style="grid-column: 1 / -1;">
+                    <label for="prePlanned">Already Planned or Must-See <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — scouts will work around these and won't duplicate them)</span></label>
+                    <input type="text" id="prePlanned" placeholder="e.g., Dinner at Tickets on Day 2, Sagrada Família visit booked for Day 1 morning">
+                </div>
+            </div>
+
+            <!-- Photography -->
+            <div class="cat-section" id="section-photos">
+                <div class="cat-header">
+                    <span class="cat-number">I</span>
+                    <span class="cat-title">Photography Interests</span>
+                    <div class="section-toggle on" id="toggle-photos" onclick="toggleSection('photos')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-photos-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="p1" name="photo_interests" value="Architecture & Buildings"><label for="p1">Architecture</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p2" name="photo_interests" value="Urban & Street Photography"><label for="p2">Urban & Street</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p3" name="photo_interests" value="Sunrise & Sunset (Golden Hour)"><label for="p3">Golden Hour</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p4" name="photo_interests" value="Landscapes & Nature"><label for="p4">Landscapes</label></div>
+                    <div class="pill-item"><input type="checkbox" id="p5" name="photo_interests" value="other" onchange="toggleOther(this,'photo_other_text')"><label for="p5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="photo_other_text_wrapper">
+                    <input type="text" id="photo_other_text" placeholder="e.g., Bridges, Industrial, Wildlife...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Photo spots per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('photos_per_day', -1)">−</button>
+                        <span class="count-value" id="photos_per_day_display">3</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('photos_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="photos_per_day" value="3">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Dining -->
+            <div class="cat-section" id="section-dining">
+                <div class="cat-header">
+                    <span class="cat-number">II</span>
+                    <span class="cat-title">Dining Preferences</span>
+                    <div class="section-toggle on" id="toggle-dining" onclick="toggleSection('dining')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-dining-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="c1" name="cuisines" value="Traditional Local Cuisine" checked><label for="c1">Local Cuisine</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c2" name="cuisines" value="Street Food & Casual"><label for="c2">Street Food</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c3" name="cuisines" value="Fine Dining & Upscale"><label for="c3">Fine Dining</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c4" name="cuisines" value="Fusion & Modern"><label for="c4">Fusion & Modern</label></div>
+                    <div class="pill-item"><input type="checkbox" id="c5" name="cuisines" value="other" onchange="toggleOther(this,'cuisine_other_text')"><label for="c5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="cuisine_other_text_wrapper">
+                    <input type="text" id="cuisine_other_text" placeholder="e.g., Thai, Lebanese, Vegan...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Restaurants per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', -1)">−</button>
+                        <span class="count-value" id="restaurants_per_day_display">3</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="restaurants_per_day" value="3">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Attractions -->
+            <div class="cat-section" id="section-attractions">
+                <div class="cat-header">
+                    <span class="cat-number">III</span>
+                    <span class="cat-title">Attraction Categories</span>
+                    <div class="section-toggle on" id="toggle-attractions" onclick="toggleSection('attractions')" title="Enable or disable this section">
+                        <span class="section-toggle-label" id="toggle-attractions-label">On</span>
+                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                    </div>
+                </div>
+                <div class="pill-grid">
+                    <div class="pill-item"><input type="checkbox" id="a1" name="attractions" value="Historical & Cultural Sites"><label for="a1">Historical & Cultural</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a2" name="attractions" value="Art, Museums & Galleries"><label for="a2">Art & Museums</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a3" name="attractions" value="Shopping & Neighborhoods"><label for="a3">Shopping & Districts</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a4" name="attractions" value="Nature, Parks & Gardens"><label for="a4">Nature & Parks</label></div>
+                    <div class="pill-item"><input type="checkbox" id="a5" name="attractions" value="other" onchange="toggleOther(this,'attr_other_text')"><label for="a5">Other</label></div>
+                </div>
+                <div class="other-reveal" id="attr_other_text_wrapper">
+                    <input type="text" id="attr_other_text" placeholder="e.g., Wineries, Beaches, Live Music...">
+                </div>
+                <div class="count-row">
+                    <span class="count-label">Attractions per day</span>
+                    <div class="count-stepper">
+                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', -1)">−</button>
+                        <span class="count-value" id="attractions_per_day_display">4</span>
+                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', 1)">+</button>
+                    </div>
+                    <input type="hidden" id="attractions_per_day" value="4">
+                    <span class="count-hint">per day</span>
+                </div>
+            </div>
+
+            <!-- Budget + Distance -->
+            <div class="field-row">
+                <div class="field">
+                    <label for="budget">Budget Range</label>
+                    <select id="budget" required>
+                        <option value="">Select...</option>
+                        <option value="Budget-Conscious">Budget-Conscious</option>
+                        <option value="Moderate" selected>Moderate</option>
+                        <option value="Upscale">Upscale</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="distance">Travel Radius</label>
+                    <select id="distance" required>
+                        <option value="">Select...</option>
+                        <option value="City Center Only">City Center Only</option>
+                        <option value="Up to 15 minutes" selected>Up to 15 minutes</option>
+                        <option value="Up to 30 minutes">Up to 30 minutes</option>
+                        <option value="Flexible">Flexible</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+
+            <div class="submit-row">
+                <button type="submit" class="submit-btn" id="submitBtn">Generate Guide</button>
+                <p class="submit-note">Powered by Claude AI<br>Results in under a minute</p>
+            </div>
+
+        </form>
+    </section>
+
+    <!-- LOADING -->
+    <div class="loading" id="loading">
+        <p class="loading-headline">Assembling your<br>perfect itinerary&hellip;</p>
+        <div class="progress-steps">
+            <div class="progress-step" id="step-photos">📸 Photo Scout</div>
+            <div class="progress-step" id="step-restaurants">🍽 Restaurant Scout</div>
+            <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
+            <div class="progress-step" id="step-building">🔍 Verifying Locations</div>
+        </div>
+        <p id="loadingMessage" class="loading-status"></p>
+    </div>
+
+    <!-- REVIEW SCREEN -->
+    <div class="review-container" id="reviewContainer">
+        <div class="review-masthead">
+            <div>
+                <h2 id="reviewTitle">Review Your Suggestions</h2>
+                <p id="reviewSubtitle">Toggle off anything you don't want in the final guide</p>
+            </div>
+            <div class="review-btns">
+                <button onclick="resetForm()">Start Over</button>
+                <button class="review-generate-btn" id="generateFinalBtn" onclick="generateFinalGuide()">
+                    Generate Final Guide
+                    <span class="review-generate-count" id="finalCountBadge">0 selected</span>
+                </button>
+            </div>
+        </div>
+        <div class="review-body" id="reviewBody"></div>
+    </div>
+
+    <!-- FINALIZING STATE -->
+    <div class="finalizing" id="finalizing">
+        <p class="loading-headline">Crafting your<br>final guide&hellip;</p>
+        <p class="finalizing-sub">Generating maps &amp; building your curated guide</p>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="result-container" id="resultContainer">
+        <div class="result-masthead">
+            <div>
+                <h2 id="resultTitle">Your Guide</h2>
+                <p id="resultSubtitle"></p>
+            </div>
+            <div class="result-btns">
+                <button onclick="printGuide()">Save as PDF</button>
+                <button onclick="reviseTrip()">Revise Trip</button>
+                <button onclick="resetForm()">Start Over</button>
+            </div>
+        </div>
+        <iframe id="previewFrame" class="result-preview"></iframe>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>
