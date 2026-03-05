@@ -1,20 +1,27 @@
 """
-tool_schemas.py — Claude tool definitions for structured scout output.
+tool_schemas.py — Claude tool definitions for structured photo scout output.
 
-Each tool accepts an *array* of items so the same schema works for both:
-  - Main scouts  (N items across all days)
-  - /replace     (single item — callers take items[0])
+PHOTO_TOOL accepts an *array* of locations so the same schema works for both:
+  - Main scout  (N locations across all days)
+  - /replace    (single location — callers take locations[0])
 
 Using tool_choice={"type": "any"} forces Claude to call the tool, guaranteeing
-structured JSON output and eliminating the markdown-fence stripping and
-_parse_json_lines fallback that the old text-completion approach required.
+structured JSON output.
 
-Usage in a scout:
+Field notes:
+  - lat / lng are decimal-degree numbers supplied by Claude from its geographic
+    knowledge.  Server-side code constructs google_earth_url from these after
+    the call; the field is NOT in the schema (Claude doesn't construct URLs).
+  - distance_from_accommodation: Claude fills this when accommodation was given;
+    server-side haversine overwrites it if Places verification provides _lat/_lng.
+  - required_gear: items from the photographer's gear vault needed for this shot.
+
+Usage:
     from tool_schemas import PHOTO_TOOL
 
     message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
-        max_tokens=6000,
+        max_tokens=8000,
         tools=[PHOTO_TOOL],
         tool_choice={"type": "any"},
         system=system_prompt,
@@ -29,302 +36,131 @@ Usage in a scout:
 """
 
 # ---------------------------------------------------------------------------
-# Photo locations
+# Photography locations (Kelby-style)
 # ---------------------------------------------------------------------------
 
 PHOTO_TOOL: dict = {
     "name": "submit_photo_locations",
-    "description": "Submit photography location recommendations for the trip guide.",
+    "description": (
+        "Submit photography location recommendations in Kelby-style four-section "
+        "format for the trip guide. Each location includes technical gear-specific "
+        "setup instructions, concrete camera settings, and honest logistics."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
             "locations": {
                 "type": "array",
-                "description": "Ordered list of photography locations.",
+                "description": "Ordered list of photography locations, one per planned shoot.",
                 "items": {
                     "type": "object",
                     "properties": {
+
                         "day": {
                             "type": "integer",
-                            "description": "Day number (1-based)."
+                            "description": "Day number (1-based) this shoot is planned for."
                         },
-                        "time": {
-                            "type": "string",
-                            "description": "Best time range, e.g. '6:30-7:30am'."
-                        },
+
                         "name": {
                             "type": "string",
-                            "description": "Exact location name."
+                            "description": "Exact location name — specific enough to find on a map."
                         },
+
                         "address": {
                             "type": "string",
-                            "description": "Full street address or neighbourhood."
-                        },
-                        "coordinates": {
-                            "type": "string",
-                            "description": "Latitude, longitude or area description."
-                        },
-                        "travel_time": {
-                            "type": "string",
                             "description": (
-                                "Approx travel time from accommodation, e.g. '8 min walk' "
-                                "or '12 min metro'. Write 'N/A' if no accommodation was given."
+                                "Full street address or the most precise location description "
+                                "available (neighbourhood + landmark if no street address exists)."
                             )
                         },
-                        "subject": {
+
+                        "lat": {
+                            "type": "number",
+                            "description": "Latitude in decimal degrees (e.g. 41.3851)."
+                        },
+
+                        "lng": {
+                            "type": "number",
+                            "description": "Longitude in decimal degrees (e.g. 2.1734)."
+                        },
+
+                        "shoot_window": {
                             "type": "string",
                             "description": (
-                                "1-2 sentences: what you are pointing the camera at and why "
-                                "it works for this client's interests. Name the specific subject."
+                                "Recommended shoot time range in local destination time, "
+                                "e.g. '5:45–7:00 AM (Day 2 — golden hour)' or "
+                                "'6:30–8:00 PM (blue hour)'. "
+                                "Derived from the ephemeris data provided in the prompt."
                             )
                         },
-                        "setup": {
+
+                        "the_shot": {
                             "type": "string",
                             "description": (
-                                "2-3 sentences: where to stand, focal length, aperture if "
-                                "relevant, framing technique. Practical instructions a "
-                                "photographer can act on immediately."
+                                "One sharp paragraph: what you are pointing at, why it works "
+                                "at this time of year and in this light. Lead with the subject. "
+                                "State what makes the location compelling right now. No filler."
                             )
                         },
-                        "light": {
+
+                        "the_setup": {
                             "type": "string",
                             "description": (
-                                "2 sentences: light direction, best window, what changes "
-                                "after that window closes. Facts, not poetry."
+                                "Exact shooting position, exact focal length from the "
+                                "photographer's lens list, framing technique. "
+                                "E.g. 'Stand at the north end of the bridge. Use the 16-35mm "
+                                "at 24mm. Fill the bottom third with the wet cobblestones...'"
                             )
                         },
-                        "pro_tip": {
+
+                        "the_settings": {
                             "type": "string",
                             "description": (
-                                "1-2 sentences: one honest, actionable tip — crowd timing, "
-                                "a less-obvious angle, a technical setting, or a seasonal caveat. "
-                                "Personalise to the client if possible."
+                                "Concrete starting-point camera settings calibrated to the "
+                                "photographer's camera type. For digital: ISO / aperture / shutter "
+                                "speed + mode. For film: stock, ASA, metering mode. "
+                                "For smartphone: Pro mode values or specific modes. "
+                                "One set of numbers — not a range."
                             )
                         },
+
+                        "the_reality_check": {
+                            "type": "string",
+                            "description": (
+                                "Honest logistics: crowds and when they thin out, sun direction "
+                                "at the exact shoot time, parking/access, permit requirements, "
+                                "seasonal caveats. Flag any missing gear the photographer will need."
+                            )
+                        },
+
+                        "required_gear": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "List ONLY items from the photographer's vault that this specific "
+                                "shot genuinely requires. E.g. ['tripod', '6-stop ND', '16-35mm f/2.8']. "
+                                "Empty array if only the camera body is needed."
+                            )
+                        },
+
+                        "distance_from_accommodation": {
+                            "type": "string",
+                            "description": (
+                                "Approximate walking or transit time from the accommodation, "
+                                "e.g. '12 min walk' or '8 min metro'. "
+                                "Write 'N/A' if no accommodation was provided."
+                            )
+                        },
+
                     },
                     "required": [
-                        "day", "time", "name", "address",
-                        "subject", "setup", "light", "pro_tip",
+                        "day", "name", "address", "lat", "lng",
+                        "shoot_window", "the_shot", "the_setup",
+                        "the_settings", "the_reality_check",
                     ],
                 },
             },
         },
         "required": ["locations"],
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# Restaurants
-# ---------------------------------------------------------------------------
-
-RESTAURANT_TOOL: dict = {
-    "name": "submit_restaurants",
-    "description": "Submit restaurant recommendations for the trip guide.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "restaurants": {
-                "type": "array",
-                "description": "Ordered list of restaurant recommendations.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "day": {
-                            "type": "integer",
-                            "description": "Day number (1-based)."
-                        },
-                        "meal_type": {
-                            "type": "string",
-                            "enum": ["breakfast", "lunch", "dinner"],
-                            "description": "Meal slot."
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Restaurant name."
-                        },
-                        "address": {
-                            "type": "string",
-                            "description": "Full street address."
-                        },
-                        "location": {
-                            "type": "string",
-                            "description": "Neighbourhood."
-                        },
-                        "cuisine": {
-                            "type": "string",
-                            "description": "Cuisine type."
-                        },
-                        "travel_time": {
-                            "type": "string",
-                            "description": (
-                                "Approx travel time from accommodation, e.g. '5 min walk' "
-                                "or '10 min taxi'. Write 'N/A' if no accommodation was given."
-                            )
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": (
-                                "2 sentences: what the place is and what to order. "
-                                "Specific — name the dish."
-                            )
-                        },
-                        "price": {
-                            "type": "string",
-                            "description": (
-                                "Price tier: $ (budget/street food), $$ (moderate), "
-                                "$$$ (moderately expensive), $$$$ (fine dining/splurge)."
-                            )
-                        },
-                        "signature_dish": {
-                            "type": "string",
-                            "description": "The one dish most worth ordering."
-                        },
-                        "ambiance": {
-                            "type": "string",
-                            "description": (
-                                "1 sentence: what you find when you walk in — "
-                                "noise level, seating, clientele, formality."
-                            )
-                        },
-                        "hours": {
-                            "type": "string",
-                            "description": "Hours of operation."
-                        },
-                        "why_this_client": {
-                            "type": "string",
-                            "description": (
-                                "1 sentence: specifically why this pick suits this client's "
-                                "profile. If no profile was given, write why it suits the "
-                                "stated cuisine/budget preferences."
-                            )
-                        },
-                        "insider_tip": {
-                            "type": "string",
-                            "description": (
-                                "1-2 sentences: reservation advice, best seat, timing, "
-                                "or one thing most visitors miss."
-                            )
-                        },
-                    },
-                    "required": [
-                        "day", "meal_type", "name", "address", "cuisine",
-                        "description", "price", "signature_dish", "ambiance",
-                    ],
-                },
-            },
-        },
-        "required": ["restaurants"],
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# Attractions
-# ---------------------------------------------------------------------------
-
-ATTRACTION_TOOL: dict = {
-    "name": "submit_attractions",
-    "description": "Submit attraction recommendations for the trip guide.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "attractions": {
-                "type": "array",
-                "description": "Ordered list of attraction recommendations.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "day": {
-                            "type": "integer",
-                            "description": "Day number (1-based)."
-                        },
-                        "time": {
-                            "type": "string",
-                            "description": "Time slot, e.g. '9:00-11:00am'."
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Attraction name."
-                        },
-                        "address": {
-                            "type": "string",
-                            "description": "Full street address."
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": (
-                                "Type: museum / market / viewpoint / park / "
-                                "historic site / neighbourhood / etc."
-                            )
-                        },
-                        "location": {
-                            "type": "string",
-                            "description": "Neighbourhood."
-                        },
-                        "travel_time": {
-                            "type": "string",
-                            "description": (
-                                "Approx travel time from accommodation, e.g. "
-                                "'15 min metro' or '6 min walk'. Write 'N/A' if "
-                                "no accommodation was given."
-                            )
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": (
-                                "2 sentences: what it is and the one thing that makes it "
-                                "worth this client's time. Honest — include any caveat."
-                            )
-                        },
-                        "admission": {
-                            "type": "string",
-                            "description": "Free / price range."
-                        },
-                        "hours": {
-                            "type": "string",
-                            "description": "Opening hours."
-                        },
-                        "duration": {
-                            "type": "string",
-                            "description": "Realistic visit length."
-                        },
-                        "best_time": {
-                            "type": "string",
-                            "description": (
-                                "Specific time advice: e.g. 'Weekday mornings before 10am' "
-                                "or 'Late afternoon when tour groups leave'."
-                            )
-                        },
-                        "why_this_client": {
-                            "type": "string",
-                            "description": (
-                                "1 sentence: specifically why this attraction suits this "
-                                "client's profile or interests."
-                            )
-                        },
-                        "highlight": {
-                            "type": "string",
-                            "description": (
-                                "The single best thing — be specific, not generic."
-                            )
-                        },
-                        "insider_tip": {
-                            "type": "string",
-                            "description": (
-                                "1-2 sentences: one piece of practical advice most "
-                                "visitors don't know."
-                            )
-                        },
-                    },
-                    "required": [
-                        "day", "time", "name", "address", "category",
-                        "description", "admission", "hours", "duration",
-                        "best_time", "highlight",
-                    ],
-                },
-            },
-        },
-        "required": ["attractions"],
     },
 }

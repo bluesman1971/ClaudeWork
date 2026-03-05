@@ -4,6 +4,52 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 9] Backend pivot — Photography assistant — 2026-03-05
+
+### What changed
+Full backend pivot from general travel guide to dedicated photography assistant.
+Restaurant and attraction scouts are removed. The photo scout is completely rewritten
+with Kelby-style technical output, gear-profile awareness, and ephemeris-driven light data.
+
+### New files
+| File | Purpose |
+|---|---|
+| `ephemeris.py` | Sunrise/sunset/golden hour/blue hour/moon calculations via `astral 3.2`. Inputs: GPS coords + list of dates. Outputs: per-day dict of UTC-aware datetimes + moon phase data. `format_ephemeris_block()` serialises to a plain-text prompt block. |
+| `prompts.py` | All Claude prompt strings. `build_photo_scout_system_prompt(gear_profile)` builds a Kelby-style system prompt from the gear vault. `build_photo_scout_user_prompt(...)` builds the user prompt injecting ephemeris, client profile, and accommodation blocks. Replace-endpoint equivalents included. |
+
+### Removed from `tool_schemas.py`
+`RESTAURANT_TOOL` and `ATTRACTION_TOOL` deleted. `PHOTO_TOOL` fully rewritten with
+Kelby-style output fields: `the_shot`, `the_setup`, `the_settings`, `the_reality_check`,
+`shoot_window`, `required_gear`, `distance_from_accommodation`, `lat`, `lng`.
+`google_earth_url` is constructed server-side (not in the schema).
+
+### Modified: `app.py`
+| Change | Detail |
+|---|---|
+| **Lifespan (3.9)** | Replaced deprecated `@app.on_event('startup'/'shutdown')` with `@asynccontextmanager _lifespan()` — proper FastAPI lifecycle management. |
+| **`google_earth_url()` (3.8)** | New helper: `f"https://earth.google.com/web/@{lat},{lng},{altitude}a,800d,35y,0h,45t,0r"`. Attached to each location after the photo scout call. |
+| **`call_photo_scout()` (3.6)** | Completely rewritten. Now accepts `gear_profile: dict`, `ephemeris_data: list`, `start_date: date`. Uses `build_photo_scout_system_prompt()` and `build_photo_scout_user_prompt()` from `prompts.py`. Attaches `google_earth_url` and mirrors `lat`/`lng` to `_lat`/`_lng` for Places verification compatibility. Cache key version bumped to `photo_v2`. |
+| **`call_restaurant_scout()` removed** | Deleted in full. |
+| **`call_attraction_scout()` removed** | Deleted in full. |
+| **`_run_scouts_background()` (3.10)** | Scout tasks dict now contains only `photos`. Added `GearProfile` loading from DB (via `gear_profile_id`). Added ephemeris computation: geocodes destination via Places API, runs `get_daily_ephemeris()` in threadpool, injects into photo scout. Session store key simplified (no `restaurants`/`attractions`). Trip saved with `gear_profile_id`, `start_date`, `end_date`; `include_dining`/`include_attractions` forced to `False`. |
+| **`generate_master_html()` (4-field photo cards)** | Photo cards rewritten to render `the_shot`, `the_setup`, `the_settings`, `the_reality_check`, `shoot_window`, required gear badges, Google Earth link. `restaurants`/`attractions` params now optional (default empty list) for backward compat. |
+| **`/finalize`** | Session dict key access uses `.get()` with empty-list default so new photo-only sessions work alongside old trips that included restaurants/attractions. |
+| **`/replace`** | Removed `restaurants` and `attractions` branches — raises HTTP 400 if non-`photos` type is requested. Uses `build_photo_replace_system_prompt()` and `build_photo_replace_user_prompt()` from `prompts.py`. Attaches `google_earth_url` and `distance_from_accommodation` to replacement item. |
+| **Imports** | Added `contextlib`, `date`, `timedelta` from stdlib. Added `ephemeris`, `prompts`, `GearProfile` imports. Removed `ATTRACTION_TOOL`, `RESTAURANT_TOOL` imports. |
+
+### Modified: `requirements.txt`
+Added `astral==3.2`.
+
+### Backward compatibility
+- Existing finalized trips (with restaurants/attractions in DB) can still be re-finalized — `generate_master_html` accepts those lists as optional args and renders them if present.
+- The `/replace` endpoint returns HTTP 400 (not 500) for old restaurant/attraction replace requests — the frontend should handle this gracefully in Phase 4.
+- Session keys `restaurants` and `attractions` are read with `.get()` defaults — no crash if missing.
+
+### No migration required
+No DB schema changes in Phase 3. All schema changes were in Phase 8 (Phase 2 of the pivot plan).
+
+---
+
 ## [Phase 8] Database schema pivot — GearProfile + Trip dates — 2026-03-05
 
 ### What changed

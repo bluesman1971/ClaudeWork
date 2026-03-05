@@ -24,7 +24,8 @@ import time
 import urllib.parse
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 
 import httpx
@@ -46,10 +47,17 @@ from auth import (
 )
 from clients import clients_router
 from database import engine, get_db, SessionLocal
-from models import Client, StaffUser, Trip, db
+from ephemeris import format_ephemeris_block, get_daily_ephemeris
+from models import Client, GearProfile, StaffUser, Trip, db
+from prompts import (
+    build_photo_replace_system_prompt,
+    build_photo_replace_user_prompt,
+    build_photo_scout_system_prompt,
+    build_photo_scout_user_prompt,
+)
 from redis_client import get_redis
 from schemas import FinalizeRequest, GenerateRequest, ReplaceRequest
-from tool_schemas import ATTRACTION_TOOL, PHOTO_TOOL, RESTAURANT_TOOL
+from tool_schemas import PHOTO_TOOL
 from trips import trips_router
 
 # ---------------------------------------------------------------------------
@@ -70,7 +78,31 @@ BASE_DIR = os.path.dirname(__file__)
 # FastAPI application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title='Trip Master API', docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Manage application-level resources via FastAPI lifespan context manager.
+
+    Replaces the deprecated @app.on_event('startup'/'shutdown') pattern.
+    The HTTP client is opened here (not as a global singleton) so it is always
+    properly closed even when the process exits abnormally.
+    """
+    global _http_client
+    _http_client = httpx.AsyncClient(
+        timeout=10,
+        headers={'User-Agent': 'TripGuideApp/1.0'},
+    )
+    await run_in_threadpool(_init_db)
+    r = get_redis()
+    if r is not None:
+        logger.warning('Redis connected and ready (session store, cache, rate limiters active)')
+    else:
+        logger.warning('Redis unavailable — using in-memory fallbacks (set REDIS_URL to enable)')
+    yield
+    await _http_client.aclose()
+    logger.info('Application shutdown: HTTP client closed.')
+
+
+app = FastAPI(title='Trip Master API', docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Production: set CORS_ORIGINS to your Railway domain (e.g. https://app.railway.app).
@@ -239,31 +271,6 @@ anthropic_client = AsyncAnthropic()
 # ---------------------------------------------------------------------------
 # Startup / shutdown
 # ---------------------------------------------------------------------------
-
-@app.on_event('startup')
-async def startup():
-    global _http_client
-    _http_client = httpx.AsyncClient(
-        timeout=10,
-        headers={'User-Agent': 'TripGuideApp/1.0'},
-    )
-
-    # Create DB tables + run column migrations
-    await run_in_threadpool(_init_db)
-
-    # Redis connectivity check (visible in Railway logs at WARNING level)
-    r = get_redis()
-    if r is not None:
-        logger.warning('Redis connected and ready (session store, cache, rate limiters active)')
-    else:
-        logger.warning('Redis unavailable — using in-memory fallbacks (set REDIS_URL to enable)')
-
-
-@app.on_event('shutdown')
-async def shutdown():
-    if _http_client:
-        await _http_client.aclose()
-
 
 def _init_db():
     """Create all tables if they don't exist. Schema migrations are managed by Alembic."""
@@ -654,17 +661,51 @@ async def prefetch_day_maps(sections_by_day: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Google Earth URL helper (3.8)
+# ---------------------------------------------------------------------------
+
+def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
+    """Construct a parameterised Google Earth Web URL from GPS coordinates.
+
+    The URL opens Google Earth at the given location with a 45-degree tilt
+    and 800-metre view distance — suitable for scouting a photography location.
+    """
+    return f'https://earth.google.com/web/@{lat},{lng},{altitude}a,800d,35y,0h,45t,0r'
+
+
+# ---------------------------------------------------------------------------
 # Scout functions (async)
 # ---------------------------------------------------------------------------
 
-async def call_photo_scout(location, duration, interests, distance, per_day=None,
-                            accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude asynchronously to generate photography locations."""
+async def call_photo_scout(
+    location:        str,
+    duration:        int,
+    interests:       str,
+    distance:        str,
+    per_day:         int | None = None,
+    accommodation:   str | None = None,
+    pre_planned:     str | None = None,
+    client_profile:  dict | None = None,
+    gear_profile:    dict | None = None,
+    ephemeris_data:  list | None = None,
+    start_date:      date | None = None,
+) -> tuple[str, list]:
+    """Call Claude to generate Kelby-style photography location guides.
+
+    Returns (cache_key, locations_list).
+    Gear profile and ephemeris data are injected into the prompts when available.
+    google_earth_url is constructed server-side from lat/lng after the call.
+    """
     if per_day is None:
         per_day = PHOTOS_PER_DAY
-    key = _cache_key('photo', location, duration, interests, distance, per_day,
-                     accommodation, pre_planned,
-                     json.dumps(client_profile or {}, sort_keys=True))
+
+    key = _cache_key(
+        'photo_v2', location, duration, interests, distance, per_day,
+        accommodation, pre_planned,
+        json.dumps(client_profile or {}, sort_keys=True),
+        json.dumps(gear_profile    or {}, sort_keys=True),
+        str(start_date),
+    )
     cached = _get_cached(key)
     if cached is not None:
         logger.info('Photo Scout: cache hit for %s', location)
@@ -672,9 +713,10 @@ async def call_photo_scout(location, duration, interests, distance, per_day=None
 
     count = duration * per_day
 
+    # ── Build prompt blocks ────────────────────────────────────────────────
     accommodation_block = (
         f'- Accommodation / travel base: {accommodation}\n'
-        f'  Distance and logistics notes must be calculated from this address, not the city centre.\n'
+        f'  Distance and logistics must be calculated from this address, not the city centre.\n'
         if accommodation else
         '- Accommodation: not specified — use city centre as the assumed travel base.\n'
     )
@@ -683,16 +725,17 @@ async def call_photo_scout(location, duration, interests, distance, per_day=None
         f'  Do NOT suggest anything that duplicates or conflicts with the above.\n'
         if pre_planned else ''
     )
-    profile = client_profile or {}
+
+    profile       = client_profile or {}
     profile_lines = []
     if profile.get('travel_style'):
         profile_lines.append(f"  Travel style: {profile['travel_style']}")
     if profile.get('preferred_budget'):
         profile_lines.append(f"  Budget tier: {profile['preferred_budget']}")
     if profile.get('home_city'):
-        profile_lines.append(f"  Home city: {profile['home_city']} — avoid suggesting things they can easily do at home")
-    if profile.get('dietary_requirements'):
-        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — respect these if any location involves food")
+        profile_lines.append(
+            f"  Home city: {profile['home_city']} — avoid locations similar to home; surprise them."
+        )
     if profile.get('notes'):
         profile_lines.append(f"  Consultant notes: {profile['notes']}")
     client_block = (
@@ -701,49 +744,25 @@ async def call_photo_scout(location, duration, interests, distance, per_day=None
         'Client profile: none provided — give broadly appealing recommendations.\n'
     )
 
-    system_prompt = f"""You are a photography location scout writing practical, no-nonsense shooting guides.
-Your recommendations are personalised to a specific client. Read their profile carefully and let it
-shape every choice — location difficulty, walk distance, time of day, and subject matter.
+    ephemeris_block = format_ephemeris_block(ephemeris_data or [])
 
-PERSONALISATION RULES:
-- If a travel style or interest is given, weight recommendations to match it. An adventure traveller
-  gets rooftop access and early-morning spots; a relaxed traveller gets café terraces and parks.
-- If a budget tier is given, factor in any access costs (paid viewpoints, permits, guided tours).
-- If a home city is given, skip locations that are similar to what they have at home — surprise them.
-- If accommodation is given, state the approximate walking or transit time from that address for
-  each location. Use real street-level logic, not straight-line distance.
-- If pre-planned commitments are listed, do NOT suggest those locations or anything that would
-  duplicate them. Reference them only if suggesting a nearby complementary spot.
-- If consultant notes mention physical limitations or other constraints, honour them absolutely.
-
-WRITING STYLE — follow this strictly:
-- Write like a knowledgeable friend giving honest advice, not a brochure.
-- Lead every field with the useful fact. No filler openers ("Nestled in...", "Boasting...").
-- Be specific, not superlative. Name what you actually see, not how it makes you feel.
-- No stacked adjectives ("stunning, vibrant, unforgettable"). One earned adjective beats three vague ones.
-- Practical over poetic. Timing, light direction, and where to stand are more useful than atmosphere words.
-- Acknowledge trade-offs honestly. If it's crowded, say so and say when it isn't.
-- Short sentences. Vary the rhythm. Cut every word that doesn't earn its place.
-- Forbidden words: stunning, breathtaking, magical, enchanting, iconic, world-class, vibrant,
-  nestled, boasting, hidden gem, off the beaten path, a feast for the senses, evocative, timeless.
-
-Use the submit_photo_locations tool to return all locations."""
-
-    user_prompt = f"""Generate {count} photography locations ({per_day} per day), spread across {duration} days.
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Photography interests: {interests}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} photography locations ({per_day} per day across {duration} days)."""
+    system_prompt = build_photo_scout_system_prompt(gear_profile)
+    user_prompt   = build_photo_scout_user_prompt(
+        location            = location,
+        duration            = duration,
+        per_day             = per_day,
+        interests           = interests,
+        distance            = distance,
+        accommodation_block = accommodation_block,
+        pre_planned_block   = pre_planned_block,
+        client_block        = client_block,
+        ephemeris_block     = ephemeris_block,
+        start_date          = start_date.isoformat() if start_date else None,
+    )
 
     message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
-        max_tokens=6000,
+        max_tokens=8000,
         tools=[PHOTO_TOOL],
         tool_choice={'type': 'any'},
         system=system_prompt,
@@ -755,229 +774,27 @@ Generate {count} photography locations ({per_day} per day across {duration} days
         if block.type == 'tool_use' and block.name == PHOTO_TOOL['name']:
             locations = block.input.get('locations', [])
             break
-    logger.info('Photo Scout: parsed %d/%d locations for %s', len(locations), count, location)
+
+    # ── Attach Google Earth URLs server-side ───────────────────────────────
+    for loc in locations:
+        lat = loc.get('lat')
+        lng = loc.get('lng')
+        if lat is not None and lng is not None:
+            try:
+                loc['google_earth_url'] = google_earth_url(float(lat), float(lng))
+                # Mirror into _lat/_lng for Places verification / haversine compatibility
+                loc['_lat'] = float(lat)
+                loc['_lng'] = float(lng)
+            except (TypeError, ValueError):
+                pass
+
+    logger.info(
+        'Photo Scout: parsed %d/%d locations for %s (gear=%s ephemeris=%s)',
+        len(locations), count, location,
+        'yes' if gear_profile else 'no',
+        'yes' if ephemeris_data else 'no',
+    )
     return key, locations
-
-
-async def call_restaurant_scout(location, duration, cuisines, budget, distance, per_day=None,
-                                 accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude asynchronously to generate restaurant recommendations."""
-    if per_day is None:
-        per_day = RESTAURANTS_PER_DAY
-    key = _cache_key('restaurant', location, duration, cuisines, budget, distance, per_day,
-                     accommodation, pre_planned,
-                     json.dumps(client_profile or {}, sort_keys=True))
-    cached = _get_cached(key)
-    if cached is not None:
-        logger.info('Restaurant Scout: cache hit for %s', location)
-        return key, cached
-
-    count = duration * per_day
-
-    accommodation_block = (
-        f'- Accommodation / travel base: {accommodation}\n'
-        f'  Distance notes must be calculated from this address, not the city centre.\n'
-        if accommodation else
-        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
-    )
-    pre_planned_block = (
-        f'Already planned / committed:\n  {pre_planned}\n'
-        f'  Do NOT suggest any restaurant that duplicates or conflicts with the above.\n'
-        f'  If a meal slot is clearly covered by a pre-planned event, skip that slot rather than\n'
-        f'  adding a competing recommendation.\n'
-        if pre_planned else ''
-    )
-    profile = client_profile or {}
-    profile_lines = []
-    if profile.get('travel_style'):
-        profile_lines.append(f"  Travel style: {profile['travel_style']}")
-    if profile.get('preferred_budget'):
-        profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — let this shape price tier selection")
-    if profile.get('home_city'):
-        profile_lines.append(f"  Home city: {profile['home_city']} — avoid chain restaurants or cuisine types they can get easily at home; prioritise genuinely local dishes and independent restaurants")
-    if profile.get('dietary_requirements'):
-        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — HARD CONSTRAINT. Never suggest a restaurant or dish that conflicts with these. Verify menu compatibility before recommending.")
-    if profile.get('notes'):
-        profile_lines.append(f"  Consultant notes: {profile['notes']}")
-    client_block = (
-        'Client profile:\n' + '\n'.join(profile_lines) + '\n'
-        if profile_lines else
-        'Client profile: none provided — give broadly appealing recommendations.\n'
-    )
-
-    system_prompt = f"""You are a dining guide writer producing clear, honest restaurant recommendations
-personalised to a specific client. Read their profile carefully — it should shape every pick.
-
-PERSONALISATION RULES:
-- Cuisine preferences are a starting point, not a ceiling. If the client profile reveals a travel
-  style or home city that suggests other good fits, include them and explain why.
-- Budget preference overrides the form budget if they conflict — the client's preference wins.
-- Home city: if given, skip chains or cuisine types they can get easily at home. Lean into
-  what is genuinely local to the destination and hard to replicate elsewhere.
-- Accommodation: if given, state approximate walking or transit time from that address to each
-  restaurant. Use realistic street-level logic.
-- DIETARY REQUIREMENTS are absolute. If given, every restaurant and every suggested dish must
-  be compatible. Do not suggest a seafood restaurant to someone with a shellfish allergy.
-  Do not suggest meat dishes to a vegetarian. Verify before recommending.
-- Pre-planned meals: if a dinner reservation is already committed, do not add another dinner
-  recommendation that day — fill other slots instead, or note the day is covered.
-- Vary price tier across the day: don't make every meal fine dining or every meal street food
-  unless the profile specifically calls for that.
-
-WRITING STYLE — follow this strictly:
-- Write like a knowledgeable local, not a food critic trying to sound important.
-- Lead with what the place is and what's good. Not how it makes you feel.
-- Be specific: name the dish, the style, the price point. No vague praise.
-- Ambiance: one plain sentence. What you actually find when you walk in.
-- Honest about trade-offs. Mention queues, cash-only, noise, or reservation difficulty if relevant.
-- Short sentences. No stacked adjectives. No filler.
-- Forbidden words: culinary journey, gastronomic, tantalise, exquisite, artisanal, world-class,
-  iconic, hidden gem, vibrant, buzzing, a feast for the senses, unforgettable.
-
-Price scale: $ = budget/street food, $$ = moderate, $$$ = moderately expensive, $$$$ = fine dining / splurge.
-
-Use the submit_restaurants tool to return all restaurants."""
-
-    user_prompt = f"""Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
-covering breakfast, lunch, and dinner in a sensible rotation.
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Cuisine preferences stated by consultant: {cuisines}
-- Budget range: {budget}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} restaurant recommendations ({per_day} per day across {duration} days)."""
-
-    message = await anthropic_client.messages.create(
-        model=SCOUT_MODEL,
-        max_tokens=5000,
-        tools=[RESTAURANT_TOOL],
-        tool_choice={'type': 'any'},
-        system=system_prompt,
-        messages=[{'role': 'user', 'content': user_prompt}],
-    )
-
-    restaurants = []
-    for block in message.content:
-        if block.type == 'tool_use' and block.name == RESTAURANT_TOOL['name']:
-            restaurants = block.input.get('restaurants', [])
-            break
-    logger.info('Restaurant Scout: parsed %d/%d restaurants for %s', len(restaurants), count, location)
-    return key, restaurants
-
-
-async def call_attraction_scout(location, duration, categories, budget, distance, per_day=None,
-                                 accommodation=None, pre_planned=None, client_profile=None):
-    """Call Claude asynchronously to generate attraction recommendations."""
-    if per_day is None:
-        per_day = ATTRACTIONS_PER_DAY
-    key = _cache_key('attraction', location, duration, categories, budget, distance, per_day,
-                     accommodation, pre_planned,
-                     json.dumps(client_profile or {}, sort_keys=True))
-    cached = _get_cached(key)
-    if cached is not None:
-        logger.info('Attraction Scout: cache hit for %s', location)
-        return key, cached
-
-    count = duration * per_day
-
-    accommodation_block = (
-        f'- Accommodation / travel base: {accommodation}\n'
-        f'  Group each day\'s attractions geographically so the client isn\'t backtracking.\n'
-        f'  Distance and travel time must be calculated from this address, not the city centre.\n'
-        if accommodation else
-        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
-    )
-    pre_planned_block = (
-        f'Already planned / committed:\n  {pre_planned}\n'
-        f'  Do NOT suggest anything that duplicates or conflicts with the above.\n'
-        f'  If a time slot is already committed, plan around it — suggest complementary nearby\n'
-        f'  stops rather than competing alternatives for the same slot.\n'
-        if pre_planned else ''
-    )
-    profile = client_profile or {}
-    profile_lines = []
-    if profile.get('travel_style'):
-        profile_lines.append(f"  Travel style: {profile['travel_style']}")
-    if profile.get('preferred_budget'):
-        profile_lines.append(f"  Budget preference: {profile['preferred_budget']} — factor into admission and tour costs")
-    if profile.get('home_city'):
-        profile_lines.append(f"  Home city: {profile['home_city']} — skip attractions that are similar to what they have at home; favour experiences genuinely unique to {location}")
-    if profile.get('dietary_requirements'):
-        profile_lines.append(f"  Dietary requirements: {profile['dietary_requirements']} — if any attraction involves food, ensure it is compatible")
-    if profile.get('notes'):
-        profile_lines.append(f"  Consultant notes: {profile['notes']}")
-    client_block = (
-        'Client profile:\n' + '\n'.join(profile_lines) + '\n'
-        if profile_lines else
-        'Client profile: none provided — give broadly appealing recommendations.\n'
-    )
-
-    system_prompt = """You are a travel writer producing practical sightseeing recommendations
-personalised to a specific client. Read their profile carefully — it should shape every choice.
-
-PERSONALISATION RULES:
-- Category preferences are a starting point. Use the client profile to choose the specific
-  venues within each category that best match their style and background.
-- Home city: if given, skip attractions that parallel something they have at home. An art museum
-  is fine — unless they're from a city famous for its art museums, in which case find something
-  more distinctive to the destination.
-- Travel style: let it shape pace and depth. An adventurous traveller gets active or off-the-
-  beaten-path options; a cultural traveller gets deeper dives into history or art.
-- Budget preference: honour it in admission recommendations and any paid experiences you suggest.
-- Pre-planned commitments: never duplicate them. If the client already has a Sagrada Família
-  ticket, do not suggest Sagrada Família — suggest what to do before or after instead.
-- If accommodation is given, plan each day's attractions so the client isn't constantly
-  backtracking. State approximate travel time from the accommodation for each stop.
-- Dietary requirements: if any attraction involves food, verify compatibility first.
-- Consultant notes: treat as hard constraints. Physical limitations, interests to avoid, or
-  specific requests must be respected absolutely.
-
-WRITING STYLE — follow this strictly:
-- Write like a well-travelled friend giving honest advice, not a tourist board.
-- Start with what the place is — a plain statement of fact.
-- Be specific: say what you actually see, hear, or do there.
-- Mention the realistic trade-off (crowds, queues, overhyped sections, anything worth knowing).
-- Best time and insider tip must be actionable. "Go early" is not enough — give a specific time.
-- Short sentences. Vary the rhythm. No stacked adjectives.
-- Forbidden words: stunning, breathtaking, magical, iconic, world-class, unmissable, legendary,
-  nestled, boasting, rich history, vibrant, hidden gem, off the beaten path.
-
-Use the submit_attractions tool to return all attractions."""
-
-    user_prompt = f"""Generate {count} attractions ({per_day} per day across {duration} days).
-
-Trip details:
-- Destination: {location}
-- Duration: {duration} days
-- Attraction interests: {categories}
-- Budget: {budget}
-- Max travel radius: {distance}
-{accommodation_block}
-{pre_planned_block}
-{client_block}
-Generate {count} attractions ({per_day} per day across {duration} days)."""
-
-    message = await anthropic_client.messages.create(
-        model=SCOUT_MODEL,
-        max_tokens=5000,
-        tools=[ATTRACTION_TOOL],
-        tool_choice={'type': 'any'},
-        system=system_prompt,
-        messages=[{'role': 'user', 'content': user_prompt}],
-    )
-
-    attractions = []
-    for block in message.content:
-        if block.type == 'tool_use' and block.name == ATTRACTION_TOOL['name']:
-            attractions = block.input.get('attractions', [])
-            break
-    logger.info('Attraction Scout: parsed %d/%d attractions for %s', len(attractions), count, location)
-    return key, attractions
 
 
 async def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=None):
@@ -1004,11 +821,14 @@ async def _run_single_scout(name, fn, args, kwargs, location, accommodation_coor
 
 async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> None:
     """
-    Full scout pipeline executed as a background asyncio coroutine.
+    Photography-focused scout pipeline executed as a background asyncio coroutine.
 
-    Accepts a validated GenerateRequest dict (body.model_dump()) and the
-    current user's ID.  Updates job state in Redis throughout so any
-    worker can answer GET /jobs/{job_id} polling requests.
+    Accepts a validated GenerateRequest dict (body.model_dump()) and the current
+    user's ID. Updates job state in Redis throughout so any worker can answer
+    GET /jobs/{job_id} polling requests.
+
+    Phase 3 pivot: restaurant and attraction scouts removed. The photo scout now
+    receives gear profile and ephemeris data for Kelby-style technical output.
     """
     db_session = None
     try:
@@ -1018,25 +838,26 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
         db_session = await run_in_threadpool(SessionLocal)
 
         # ── Unpack validated params ───────────────────────────────────────────
-        location      = params['location']
-        duration      = params['duration']
-        budget        = params.get('budget') or 'Moderate'
-        distance      = params.get('distance') or 'Up to 30 minutes'
-        accommodation = params.get('accommodation')
-        pre_planned   = params.get('pre_planned')
-
-        include_photos      = params.get('include_photos', True)
-        include_dining      = params.get('include_dining', True)
-        include_attractions = params.get('include_attractions', True)
-
-        photos_per_day      = params.get('photos_per_day',      PHOTOS_PER_DAY)
-        restaurants_per_day = params.get('restaurants_per_day', RESTAURANTS_PER_DAY)
-        attractions_per_day = params.get('attractions_per_day', ATTRACTIONS_PER_DAY)
-
+        location        = params['location']
+        duration        = params['duration']
+        budget          = params.get('budget') or 'Moderate'
+        distance        = params.get('distance') or 'Up to 30 minutes'
+        accommodation   = params.get('accommodation')
+        pre_planned     = params.get('pre_planned')
+        photos_per_day  = params.get('photos_per_day', PHOTOS_PER_DAY)
         photo_interests = params.get('photo_interests') or ''
-        cuisines        = params.get('cuisines')        or ''
-        attraction_cats = params.get('attraction_cats') or ''
         client_id       = params.get('client_id')
+        gear_profile_id = params.get('gear_profile_id')
+
+        # start_date may be a date object (from model_dump) or None
+        start_date_raw  = params.get('start_date')
+        start_date: date | None = (
+            start_date_raw if isinstance(start_date_raw, date) else None
+        )
+
+        logger.info('BG job=%s: %s %d days | photos_per_day=%d gear=%s',
+                    job_id[:8], location, duration, photos_per_day,
+                    gear_profile_id or 'none')
 
         # ── Load client profile ───────────────────────────────────────────────
         client_profile = None
@@ -1046,64 +867,85 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
                 db_client = await run_in_threadpool(lambda: db_session.get(Client, cid))
                 if db_client and not db_client.is_deleted:
                     client_profile = {k: v for k, v in {
-                        'home_city':            db_client.home_city            or '',
-                        'preferred_budget':     db_client.preferred_budget     or '',
-                        'travel_style':         db_client.travel_style         or '',
-                        'dietary_requirements': db_client.dietary_requirements or '',
-                        'notes':                db_client.notes                or '',
+                        'home_city':        db_client.home_city        or '',
+                        'preferred_budget': db_client.preferred_budget or '',
+                        'travel_style':     db_client.travel_style     or '',
+                        'notes':            db_client.notes            or '',
                     }.items() if v}
-                    logger.info('BG job=%s: client profile loaded for id=%d', job_id[:8], cid)
+                    logger.info('BG job=%s: client profile loaded id=%d', job_id[:8], cid)
             except Exception as cp_exc:
                 logger.warning('BG job=%s: could not load client profile (id=%s): %s',
                                job_id[:8], client_id, cp_exc)
 
-        _job_update(job_id, {'progress': 15, 'message': f'Generating recommendations for {location}…'})
+        # ── Load gear profile ─────────────────────────────────────────────────
+        gear_profile = None
+        if gear_profile_id is not None:
+            try:
+                gid      = int(gear_profile_id)
+                db_gear  = await run_in_threadpool(lambda: db_session.get(GearProfile, gid))
+                if db_gear:
+                    gear_profile = db_gear.to_dict()
+                    logger.info('BG job=%s: gear profile loaded id=%d (%s)',
+                                job_id[:8], gid, db_gear.name)
+            except Exception as gp_exc:
+                logger.warning('BG job=%s: could not load gear profile (id=%s): %s',
+                               job_id[:8], gear_profile_id, gp_exc)
 
-        logger.info('BG job=%s: %s %d days | photos=%s dining=%s attractions=%s',
-                    job_id[:8], location, duration,
-                    'ON' if include_photos else 'OFF',
-                    'ON' if include_dining else 'OFF',
-                    'ON' if include_attractions else 'OFF')
-
-        # ── Build scout task list ─────────────────────────────────────────────
-        scout_tasks = {}
-        if include_photos:
-            scout_tasks['photos'] = (
-                call_photo_scout,
-                (location, duration, photo_interests, distance),
-                {'per_day': photos_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
-        if include_dining:
-            scout_tasks['restaurants'] = (
-                call_restaurant_scout,
-                (location, duration, cuisines, budget, distance),
-                {'per_day': restaurants_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
-        if include_attractions:
-            scout_tasks['attractions'] = (
-                call_attraction_scout,
-                (location, duration, attraction_cats, budget, distance),
-                {'per_day': attractions_per_day, 'accommodation': accommodation,
-                 'pre_planned': pre_planned, 'client_profile': client_profile},
-            )
+        _job_update(job_id, {'progress': 15, 'message': f'Preparing ephemeris for {location}…'})
 
         # ── Geocode accommodation ─────────────────────────────────────────────
         accommodation_coords: tuple = (None, None)
         if accommodation and PLACES_VERIFY_ENABLED:
-            _job_update(job_id, {'progress': 20, 'message': 'Geocoding accommodation…'})
+            _job_update(job_id, {'progress': 18, 'message': 'Geocoding accommodation…'})
             accommodation_coords = await _geocode_accommodation(accommodation)
 
-        _job_update(job_id, {'progress': 25, 'message': f'Scouting {location}…'})
+        # ── Compute ephemeris (requires Places API geocoding of destination) ──
+        ephemeris_data: list = []
+        if start_date and PLACES_VERIFY_ENABLED:
+            try:
+                _job_update(job_id, {'progress': 20, 'message': 'Computing light data…'})
+                dest_lat, dest_lng = await _geocode_accommodation(location)
+                if dest_lat is not None:
+                    dates          = [start_date + timedelta(days=i) for i in range(duration)]
+                    ephemeris_data = await run_in_threadpool(
+                        get_daily_ephemeris, dest_lat, dest_lng, dates
+                    )
+                    logger.info('BG job=%s: ephemeris computed %d days from (%.4f, %.4f)',
+                                job_id[:8], len(ephemeris_data), dest_lat, dest_lng)
+                else:
+                    logger.info('BG job=%s: ephemeris skipped — could not geocode %r',
+                                job_id[:8], location)
+            except Exception as eph_exc:
+                logger.warning('BG job=%s: ephemeris computation failed: %s', job_id[:8], eph_exc)
+        elif start_date:
+            logger.info('BG job=%s: ephemeris skipped — Places API key not configured', job_id[:8])
+
+        _job_update(job_id, {'progress': 25, 'message': f'Scouting photography locations in {location}…'})
 
         if PLACES_VERIFY_ENABLED:
             logger.info('BG job=%s: Places verification enabled', job_id[:8])
         else:
             logger.info('BG job=%s: Places verification disabled (no API key)', job_id[:8])
 
-        # ── Initial parallel scout run ────────────────────────────────────────
-        results = {'photos': [], 'restaurants': [], 'attractions': []}
+        # ── Photo scout task ──────────────────────────────────────────────────
+        scout_tasks = {
+            'photos': (
+                call_photo_scout,
+                (location, duration, photo_interests, distance),
+                {
+                    'per_day':        photos_per_day,
+                    'accommodation':  accommodation,
+                    'pre_planned':    pre_planned,
+                    'client_profile': client_profile,
+                    'gear_profile':   gear_profile,
+                    'ephemeris_data': ephemeris_data,
+                    'start_date':     start_date,
+                },
+            ),
+        }
+
+        # ── Run scout (with retry) ────────────────────────────────────────────
+        results = {'photos': []}
         raw_results = await asyncio.gather(
             *[_run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
               for name, (fn, args, kwargs) in scout_tasks.items()],
@@ -1117,39 +959,31 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
                 results[name] = result
                 logger.info("BG job=%s scout '%s': %d item(s)", job_id[:8], name, len(result))
 
-        # ── Retry scouts that returned 0 items ────────────────────────────────
+        # ── Retry if photo scout returned 0 locations ─────────────────────────
         for attempt in range(1, SCOUT_MAX_RETRIES + 1):
-            empty_scouts = [name for name in scout_tasks if not results[name]]
-            if not empty_scouts:
+            if results['photos']:
                 break
-            logger.warning('BG job=%s: retry %d — empty: %s', job_id[:8], attempt, empty_scouts)
-            _job_update(job_id, {'message': f'Retrying {", ".join(empty_scouts)} scout…'})
+            logger.warning('BG job=%s: retry %d — photos returned 0', job_id[:8], attempt)
+            _job_update(job_id, {'message': 'Retrying photo scout…'})
             await asyncio.sleep(SCOUT_RETRY_DELAY)
-            for name in empty_scouts:
-                fn, args, kwargs = scout_tasks[name]
-                try:
-                    items         = await _run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
-                    results[name] = items
-                    logger.info("BG job=%s scout '%s': retry %d returned %d item(s)",
-                                job_id[:8], name, attempt, len(items))
-                except Exception as exc:
-                    logger.error("BG job=%s scout '%s': retry %d failed — %s",
-                                 job_id[:8], name, attempt, exc)
+            fn, args, kwargs = scout_tasks['photos']
+            try:
+                items             = await _run_single_scout('photos', fn, args, kwargs, location, accommodation_coords)
+                results['photos'] = items
+                logger.info("BG job=%s: retry %d returned %d location(s)", job_id[:8], attempt, len(items))
+            except Exception as exc:
+                logger.error("BG job=%s: retry %d failed — %s", job_id[:8], attempt, exc)
 
-        # ── Collect warnings for still-empty scouts ───────────────────────────
+        # ── Warn if still empty ───────────────────────────────────────────────
         warnings = []
-        for name in scout_tasks:
-            if not results[name]:
-                label = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}[name]
-                warnings.append(
-                    f'{label} recommendations could not be generated after '
-                    f'{SCOUT_MAX_RETRIES + 1} attempt(s). You can proceed without this section or try again.'
-                )
-                logger.warning("BG job=%s scout '%s': 0 results after %d attempt(s)",
-                               job_id[:8], name, SCOUT_MAX_RETRIES + 1)
-
-        if not any(results[n] for n in scout_tasks):
-            raise ValueError('No recommendations could be generated. Please try again.')
+        if not results['photos']:
+            warnings.append(
+                f'Photography locations could not be generated after '
+                f'{SCOUT_MAX_RETRIES + 1} attempt(s). Please try again.'
+            )
+            logger.warning("BG job=%s: 0 photo locations after %d attempt(s)",
+                           job_id[:8], SCOUT_MAX_RETRIES + 1)
+            raise ValueError('No photo locations could be generated. Please try again.')
 
         colors = get_color_palette(location)
         _job_update(job_id, {'progress': 80, 'message': 'Saving trip…'})
@@ -1158,12 +992,10 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
         _evict_sessions()
         session_id = str(uuid.uuid4())
         _session_set(session_id, {
-            'location':    location,
-            'duration':    duration,
-            'colors':      colors,
-            'photos':      results['photos'],
-            'restaurants': results['restaurants'],
-            'attractions': results['attractions'],
+            'location': location,
+            'duration': duration,
+            'colors':   colors,
+            'photos':   results['photos'],
         })
 
         # ── Save draft trip to DB ─────────────────────────────────────────────
@@ -1171,29 +1003,26 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
         try:
             def _save_trip():
                 trip = Trip(
-                    client_id            = client_id,
-                    created_by_id        = user_id,
-                    title                = f"{location} — {duration} day{'s' if duration != 1 else ''}",
-                    status               = 'draft',
-                    location             = location,
-                    duration             = duration,
-                    budget               = budget,
-                    distance             = distance,
-                    include_photos       = include_photos,
-                    include_dining       = include_dining,
-                    include_attractions  = include_attractions,
-                    photos_per_day       = photos_per_day,
-                    restaurants_per_day  = restaurants_per_day,
-                    attractions_per_day  = attractions_per_day,
-                    photo_interests      = photo_interests or None,
-                    cuisines             = cuisines or None,
-                    attraction_cats      = attraction_cats or None,
-                    accommodation        = accommodation,
-                    raw_photos           = json.dumps(results['photos']),
-                    raw_restaurants      = json.dumps(results['restaurants']),
-                    raw_attractions      = json.dumps(results['attractions']),
-                    colors               = json.dumps(colors),
-                    session_id           = session_id,
+                    client_id           = client_id,
+                    created_by_id       = user_id,
+                    gear_profile_id     = gear_profile_id,
+                    title               = f"{location} — {duration} day{'s' if duration != 1 else ''}",
+                    status              = 'draft',
+                    location            = location,
+                    duration            = duration,
+                    start_date          = start_date,
+                    end_date            = (start_date + timedelta(days=duration - 1)) if start_date else None,
+                    budget              = budget,
+                    distance            = distance,
+                    include_photos      = True,
+                    include_dining      = False,
+                    include_attractions = False,
+                    photos_per_day      = photos_per_day,
+                    photo_interests     = photo_interests or None,
+                    accommodation       = accommodation,
+                    raw_photos          = json.dumps(results['photos']),
+                    colors              = json.dumps(colors),
+                    session_id          = session_id,
                 )
                 db_session.add(trip)
                 db_session.commit()
@@ -1211,25 +1040,20 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
             'progress': 100,
             'message':  'Done!',
             'results':  {
-                'status':           'success',
-                'session_id':       session_id,
-                'trip_id':          trip_id,
-                'location':         location,
-                'duration':         duration,
-                'colors':           colors,
-                'photos':           results['photos'],
-                'restaurants':      results['restaurants'],
-                'attractions':      results['attractions'],
-                'photo_count':      len(results['photos']),
-                'restaurant_count': len(results['restaurants']),
-                'attraction_count': len(results['attractions']),
-                'warnings':         warnings,
-                'model':            SCOUT_MODEL_LABEL,
+                'status':       'success',
+                'session_id':   session_id,
+                'trip_id':      trip_id,
+                'location':     location,
+                'duration':     duration,
+                'colors':       colors,
+                'photos':       results['photos'],
+                'photo_count':  len(results['photos']),
+                'warnings':     warnings,
+                'model':        SCOUT_MODEL_LABEL,
             },
         })
-        logger.info('BG job=%s: complete — %d photos, %d restaurants, %d attractions',
-                    job_id[:8], len(results['photos']), len(results['restaurants']),
-                    len(results['attractions']))
+        logger.info('BG job=%s: complete — %d photo locations',
+                    job_id[:8], len(results['photos']))
 
     except Exception as exc:
         logger.error('BG job=%s failed: %s', job_id, exc, exc_info=True)
@@ -1285,28 +1109,36 @@ def build_day_map_html(data_uri, maps_link, location_list_html):
     return location_list_html
 
 
-def generate_master_html(location, duration, photos, restaurants, attractions, colors, prefetched_maps=None):
-    """Generate unified HTML master document — Editorial theme."""
+def generate_master_html(location, duration, photos, restaurants=None, attractions=None, colors=None, prefetched_maps=None):
+    """Generate unified HTML master document — Editorial theme (Kelby-style photography pivot).
+
+    restaurants and attractions are accepted for backward compatibility with
+    trips generated before the Phase 3 pivot.  New trips will pass empty lists.
+    colors defaults to the palette for the location.
+    """
+    restaurants = restaurants or []
+    attractions  = attractions  or []
+    colors       = colors or get_color_palette(location)
 
     safe_location  = escape(location)
     generated_date = datetime.now().strftime('%B %d, %Y')
     city_name      = escape(location.split(',')[0].strip())
 
-    roman          = ['I', 'II', 'III']
+    roman = ['I', 'II', 'III']
     active_sections = []
     if photos:      active_sections.append('photos')
     if restaurants: active_sections.append('restaurants')
     if attractions: active_sections.append('attractions')
 
-    section_names      = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}
-    cover_footer_sections = ' &middot; '.join(section_names[s] for s in active_sections) or 'Custom Guide'
+    section_names         = {'photos': 'Photography', 'restaurants': 'Dining', 'attractions': 'Attractions'}
+    cover_footer_sections = ' &middot; '.join(section_names[s] for s in active_sections) or 'Photography Guide'
     cover_dek_parts = []
     if photos:       cover_dek_parts.append('photography locations')
     if restaurants:  cover_dek_parts.append('dining recommendations')
     if attractions:  cover_dek_parts.append('attractions worth seeking out')
     cover_dek_text = ', '.join(cover_dek_parts[:-1]) + (
         f' and {cover_dek_parts[-1]}' if len(cover_dek_parts) > 1
-        else (cover_dek_parts[0] if cover_dek_parts else 'highlights')
+        else (cover_dek_parts[0] if cover_dek_parts else 'photography locations')
     )
 
     html = f"""<!DOCTYPE html>
@@ -1942,46 +1774,73 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
 
             for photo in day_photos:
                 fallback_maps_url = create_google_maps_link(
-                    photo.get('name', ''), photo.get('address', ''), photo.get('coordinates', ''))
+                    photo.get('name', ''), photo.get('address', ''),
+                    f"{photo.get('lat', '')},{photo.get('lng', '')}")
                 badge, notice, confirmed_url = _verification_badge_html(photo)
-                maps_url     = escape(confirmed_url or fallback_maps_url)
-                travel_time  = photo.get('travel_time', '')
-                travel_html  = (
-                    f'<div class="meta-cell"><span class="meta-label">From Accommodation</span>'
-                    f'<span class="meta-value">{_e(travel_time)}</span></div>'
-                ) if travel_time and travel_time.upper() != 'N/A' else ''
+                maps_url = escape(confirmed_url or fallback_maps_url)
+
+                # Google Earth link (server-side constructed from lat/lng)
+                earth_url = escape(photo.get('google_earth_url', ''))
+                earth_link_html = (
+                    f'<a href="{earth_url}" target="_blank" rel="noopener noreferrer">'
+                    f'Scout on Google Earth</a>'
+                ) if earth_url else ''
+
+                # Distance from accommodation
+                dist_from_acc = photo.get('distance_from_accommodation', '')
+                dist_html = (
+                    f'<div class="meta-cell">'
+                    f'<span class="meta-label">From Accommodation</span>'
+                    f'<span class="meta-value">{_e(dist_from_acc)}</span></div>'
+                ) if dist_from_acc and dist_from_acc.upper() != 'N/A' else ''
+
+                # Required gear badges
+                required_gear = photo.get('required_gear') or []
+                gear_badges = ''.join(
+                    f'<span class="item-card-tag" style="margin-top:4px;">{escape(str(g))}</span>'
+                    for g in required_gear
+                )
+                gear_html = (
+                    f'<div class="full-field">'
+                    f'<span class="meta-label">Required Gear</span>'
+                    f'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">'
+                    f'{gear_badges}</div></div>'
+                ) if gear_badges else ''
+
                 html += f"""
         <div class="item-card">
             <div class="item-card-head">
                 <h3 class="item-card-title">{_e(photo.get('name'), 'Location')}</h3>
                 <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
                     {badge}
-                    <span class="item-card-tag highlight">{_e(photo.get('time'), '')}</span>
+                    <span class="item-card-tag highlight">{_e(photo.get('shoot_window'), '')}</span>
                 </div>
             </div>
             <div class="item-card-body">
-                <div class="item-meta-grid">
-                    <div class="meta-cell">
-                        <span class="meta-label">Subject</span>
-                        <span class="meta-value">{_e(photo.get('subject'))}</span>
-                    </div>
-                    <div class="meta-cell">
-                        <span class="meta-label">Camera Setup</span>
-                        <span class="meta-value">{_e(photo.get('setup'))}</span>
-                    </div>
-                    {travel_html}
+                <div class="full-field">
+                    <span class="meta-label">The Shot</span>
+                    {_e(photo.get('the_shot'))}
                 </div>
-                <div class="meta-cell">
-                    <span class="meta-label">Light &amp; Conditions</span>
-                    <span class="meta-value">{_e(photo.get('light'))}</span>
+                <div class="full-field">
+                    <span class="meta-label">The Setup</span>
+                    {_e(photo.get('the_setup'))}
+                </div>
+                <div class="full-field">
+                    <span class="meta-label">The Settings</span>
+                    {_e(photo.get('the_settings'))}
                 </div>
                 <div class="tip-box">
-                    <span class="meta-label">Pro Tip</span>
-                    {_e(photo.get('pro_tip'))}
+                    <span class="meta-label">The Reality Check</span>
+                    {_e(photo.get('the_reality_check'))}
+                </div>
+                {gear_html}
+                <div class="item-meta-grid">
+                    {dist_html}
                 </div>
                 {notice}
-                <div class="maps-link">
+                <div class="maps-link" style="display:flex;gap:24px;flex-wrap:wrap;">
                     <a href="{maps_url}" target="_blank" rel="noopener noreferrer">View on Google Maps</a>
+                    {earth_link_html}
                 </div>
             </div>
         </div>"""
@@ -2300,9 +2159,9 @@ async def finalize_guide(
             location   = _sess['location']
             duration   = _sess['duration']
             colors     = _sess['colors']
-            all_photos = _sess['photos']
-            all_rests  = _sess['restaurants']
-            all_attrs  = _sess['attractions']
+            all_photos = _sess.get('photos',      [])
+            all_rests  = _sess.get('restaurants', [])   # empty for post-pivot trips
+            all_attrs  = _sess.get('attractions', [])   # empty for post-pivot trips
             logger.info('Finalize: session %s resolved from store', session_id[:8])
         elif session_id:
             db_trip = await run_in_threadpool(
@@ -2340,7 +2199,7 @@ async def finalize_guide(
         restaurants = [all_rests[i]  for i in approved_rest_idx]
         attractions = [all_attrs[i]  for i in approved_attr_idx]
 
-        logger.info('Finalizing session %s — approved: %d photos, %d restaurants, %d attractions',
+        logger.info('Finalizing session %s — %d photos, %d restaurants, %d attractions',
                     session_id[:8], len(photos), len(restaurants), len(attractions))
 
         # ── Pre-fetch map images (async) ──────────────────────────────────────
@@ -2505,6 +2364,16 @@ async def replace_item(
             except Exception as cp_exc:
                 logger.warning('Replace: could not load client profile: %s', cp_exc)
 
+        # ── Validate item type — only photos supported after pivot ──────────────
+        if item_type != 'photos':
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Item type '{item_type}' is no longer supported. "
+                    "Only photography locations can be replaced."
+                ),
+            )
+
         # ── Build prompt ──────────────────────────────────────────────────────
         exclude_block = (
             'IMPORTANT — Do NOT suggest any of the following (already in the guide):\n'
@@ -2512,47 +2381,17 @@ async def replace_item(
             + '\n'
         ) if exclude_names else ''
 
-        day_context = f'Day {day} of a {duration}-day trip.'
-
-        if item_type == 'photos':
-            replace_tool = PHOTO_TOOL
-            items_key    = 'locations'
-            system_prompt = "You are a photography location scout. Find ONE real, currently accessible photography location that has NOT already been suggested."
-            user_prompt = f"""Find one photography location in {location}.
-
-{exclude_block}
-Context: {day_context}
-Photography interests: {interests or 'general'}
-Budget: {budget} | Travel radius: {distance}
-Set day={day} and travel_time="N/A"."""
-
-        elif item_type == 'restaurants':
-            replace_tool = RESTAURANT_TOOL
-            items_key    = 'restaurants'
-            meal_hint = f'This should be a {meal_type} option.' if meal_type else ''
-            diet_hint = ''
-            if client_profile and client_profile.get('dietary_requirements'):
-                diet_hint = f"DIETARY HARD CONSTRAINT — never suggest anything incompatible with: {client_profile['dietary_requirements']}\n"
-            system_prompt = f"You are a dining guide writer. Find ONE real restaurant that has NOT already been suggested.\n{diet_hint}"
-            user_prompt = f"""Find one restaurant in {location}.
-
-{exclude_block}
-Context: {day_context} {meal_hint}
-Cuisine preferences: {cuisines_str or 'any local'}
-Budget: {budget} | Travel radius: {distance}
-Set day={day} and travel_time="N/A"."""
-
-        else:  # attractions
-            replace_tool = ATTRACTION_TOOL
-            items_key    = 'attractions'
-            system_prompt = "You are a travel writer. Find ONE real, currently accessible attraction that has NOT already been suggested."
-            user_prompt = f"""Find one attraction in {location}.
-
-{exclude_block}
-Context: {day_context}
-Attraction interests: {categories or 'general sightseeing'}
-Budget: {budget} | Travel radius: {distance}
-Set day={day} and travel_time="N/A"."""
+        replace_tool  = PHOTO_TOOL
+        items_key     = 'locations'
+        system_prompt = build_photo_replace_system_prompt()
+        user_prompt   = build_photo_replace_user_prompt(
+            location      = location,
+            day           = day,
+            duration      = duration,
+            interests     = interests,
+            distance      = distance,
+            exclude_block = exclude_block,
+        )
 
         logger.info('Replace: type=%s idx=%d day=%d location=%s excluded=%d',
                     item_type, item_idx, day, location, len(exclude_names))
@@ -2581,6 +2420,17 @@ Set day={day} and travel_time="N/A"."""
                 detail='Could not find an alternative. Try again or toggle this item off.',
             )
 
+        # ── Attach Google Earth URL server-side ───────────────────────────────
+        lat = new_item.get('lat')
+        lng = new_item.get('lng')
+        if lat is not None and lng is not None:
+            try:
+                new_item['google_earth_url'] = google_earth_url(float(lat), float(lng))
+                new_item['_lat'] = float(lat)
+                new_item['_lng'] = float(lng)
+            except (TypeError, ValueError):
+                pass
+
         # ── Places verification ───────────────────────────────────────────────
         if PLACES_VERIFY_ENABLED:
             verified, _ = await verify_places_batch([new_item], 'name', 'address', location)
@@ -2592,24 +2442,20 @@ Set day={day} and travel_time="N/A"."""
             acc_lat, acc_lng = await _geocode_accommodation(db_trip.accommodation)
             if acc_lat is not None:
                 _apply_distances([new_item], acc_lat, acc_lng)
+                new_item['distance_from_accommodation'] = new_item.get('travel_time', 'N/A')
 
         # ── Update DB trip record ─────────────────────────────────────────────
         if db_trip:
             try:
                 def _update_db():
-                    arr_field = {
-                        'photos':      'raw_photos',
-                        'restaurants': 'raw_restaurants',
-                        'attractions': 'raw_attractions',
-                    }[item_type]
-                    raw_arr = json.loads(getattr(db_trip, arr_field) or '[]')
+                    raw_arr = json.loads(db_trip.raw_photos or '[]')
                     if item_idx < len(raw_arr):
                         raw_arr[item_idx] = new_item
-                        setattr(db_trip, arr_field, json.dumps(raw_arr))
-                        db_trip.updated_at = datetime.now(timezone.utc)
+                        db_trip.raw_photos  = json.dumps(raw_arr)
+                        db_trip.updated_at  = datetime.now(timezone.utc)
                         db_session.commit()
-                        logger.info('Replace: DB trip %d updated — %s[%d] replaced',
-                                    db_trip.id, item_type, item_idx)
+                        logger.info('Replace: DB trip %d updated — photos[%d] replaced',
+                                    db_trip.id, item_idx)
 
                 await run_in_threadpool(_update_db)
             except Exception as db_exc:

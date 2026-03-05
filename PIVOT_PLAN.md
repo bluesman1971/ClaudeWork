@@ -56,21 +56,23 @@ has_gimbal: Boolean  # smartphone/video stabilizer
 
 ---
 
-## Phase 3 — Backend Pivot
-*Core work. Estimated: 4–6 days.*
+## Phase 3 — Backend Pivot ✅ Complete
+*Completed 2026-03-05.*
 
 | # | Task | File(s) | Status |
 |---|------|---------|--------|
-| 3.1 | Remove `call_restaurant_scout`, `call_attraction_scout` and all related endpoints/job logic from `app.py` | `app.py` | `[ ]` |
-| 3.2 | Remove restaurant and attraction tool schemas | `tool_schemas.py` | `[ ]` |
-| 3.3 | Create `prompts.py` — move all prompt strings here. Structure as module-level constants + builder functions | `prompts.py` (new) | `[ ]` |
-| 3.4 | Install `astral` library and add to `requirements.txt` (pinned) | `requirements.txt` | `[ ]` |
-| 3.5 | Create ephemeris helper (in `ephemeris.py` or `trips.py`) — input: GPS coords + list of dates → output per date: sunrise, sunset, golden hour start/end, blue hour start/end, moon phase, moon illumination | `ephemeris.py` (new) | `[ ]` |
-| 3.6 | Rewrite photo scout prompt in `prompts.py` using Kelby-style structure (see format below) | `prompts.py` | `[ ]` |
-| 3.7 | Update Claude tool schema for photo scout to include new output fields (see schema below) | `tool_schemas.py` | `[ ]` |
-| 3.8 | Add `google_earth_url()` helper function — constructs parameterized URL from lat/lng | `app.py` or `ephemeris.py` | `[ ]` |
-| 3.9 | Fix `httpx` client lifecycle — replace global singleton with FastAPI lifespan context manager | `app.py` | `[ ]` |
-| 3.10 | Remove unused Redis in-memory fallback code (`_evict_sessions` and related) if Redis is guaranteed in production | `app.py`, `redis_client.py` | `[ ]` |
+| 3.1 | Remove `call_restaurant_scout`, `call_attraction_scout` and all related endpoints/job logic from `app.py` | `app.py` | `[x]` |
+| 3.2 | Remove restaurant and attraction tool schemas | `tool_schemas.py` | `[x]` |
+| 3.3 | Create `prompts.py` — all prompt strings as module-level constants + builder functions | `prompts.py` (new) | `[x]` |
+| 3.4 | Install `astral==3.2` and add to `requirements.txt` (pinned) | `requirements.txt` | `[x]` |
+| 3.5 | Create `ephemeris.py` — GPS coords + date list → per-day sunrise/sunset/golden-hour/blue-hour/moon data via `astral`. `format_ephemeris_block()` serialises to prompt text. | `ephemeris.py` (new) | `[x]` |
+| 3.6 | Rewrite photo scout prompt in `prompts.py` using Kelby-style 4-section structure | `prompts.py` | `[x]` |
+| 3.7 | Update Claude tool schema — new fields: `lat`, `lng`, `the_shot`, `the_setup`, `the_settings`, `the_reality_check`, `shoot_window`, `required_gear`, `distance_from_accommodation` | `tool_schemas.py` | `[x]` |
+| 3.8 | Add `google_earth_url(lat, lng, altitude=500)` helper — constructs parameterized Google Earth Web URL | `app.py` | `[x]` |
+| 3.9 | Fix `httpx` client lifecycle — replaced `@app.on_event` with `@asynccontextmanager _lifespan()` passed to `FastAPI(lifespan=...)` | `app.py` | `[x]` |
+| 3.10 | Wire ephemeris + gear profile into `_run_scouts_background`; update `/finalize` session key access; update `/replace` to photo-only | `app.py` | `[x]` |
+
+**Note on 3.10 original scope:** "Remove unused Redis in-memory fallback code" was deferred — the fallback is still useful for local dev without Redis. Replaced with wiring ephemeris into the job runner, which was the more important work.  `_evict_sessions` kept for now.
 
 **Kelby-style output structure per location:**
 ```
@@ -150,6 +152,7 @@ def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
 | 2026-03-05 | Plan created. Security + photography pivot architecture finalized. | Start Phase 1 (CORS, pin deps) |
 | 2026-03-05 | Phase 1 complete. CORS split dev/prod, `anthropic` pinned to `==0.80.0`, PII removed from login log, CSP header added to security middleware. `unsafe-inline` retained in `script-src` due to inline onclick handlers — flagged as TODO for Phase 4. | Start Phase 2 (DB schema: GearProfile model + Trip date fields) |
 | 2026-03-05 | Phase 2 complete. `GearProfile` model + migration added. `Trip` model updated with `start_date`/`end_date`/`gear_profile_id`. `duration` made nullable (backward compat via `duration_days` property). `GearProfileCreate`/`Update` schemas added. `GenerateRequest` updated with date/gear fields + model validator. Migration uses `batch_alter_table` throughout for SQLite compat. | Start Phase 3 (backend pivot: remove restaurant/attraction scouts, add ephemeris engine, rewrite photo scout) |
+| 2026-03-05 | Phase 3 complete. Restaurant/attraction scouts and tool schemas removed. `ephemeris.py` created (astral 3.2: sunrise/sunset/golden-hour/blue-hour/moon per day). `prompts.py` created (Kelby-style system + user prompt builders, gear-aware settings guidance, replace-endpoint prompts). `PHOTO_TOOL` rewritten with 12 Kelby-style fields. `google_earth_url()` helper added. `call_photo_scout()` rewritten with gear+ephemeris injection. `_run_scouts_background` updated (gear profile loaded from DB, ephemeris geocoded via Places API, photo-only scout tasks). FastAPI lifespan context manager replaces deprecated `on_event`. `/finalize` session key access hardened with `.get()` defaults. `/replace` restricted to photo type only. `generate_master_html` photo cards rewritten with 4-section Kelby layout + Google Earth links + gear badges. `astral==3.2` added to requirements.txt. | Start Phase 4 (frontend: date pickers, gear selector, Kelby card layout, Google Earth button) |
 
 ---
 
