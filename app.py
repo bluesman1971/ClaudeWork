@@ -664,13 +664,19 @@ async def prefetch_day_maps(sections_by_day: dict) -> dict:
 # Google Earth URL helper (3.8)
 # ---------------------------------------------------------------------------
 
-def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
+def google_earth_url(lat: float, lng: float, altitude: int = 0) -> str:
     """Construct a parameterised Google Earth Web URL from GPS coordinates.
 
-    The URL opens Google Earth at the given location with a 45-degree tilt
-    and 800-metre view distance — suitable for scouting a photography location.
+    URL format: @lat,lng,altA,rangeD,tiltT,headingH,rollR  (5 params, no 'y')
+      alt   = target elevation in metres above sea level (0 = ground level)
+      range = camera-to-target distance in metres  ← controls zoom
+      tilt  = camera tilt in degrees (0 = top-down, 90 = horizontal)
+      heading / roll = compass direction and roll (both 0 = north, level)
+
+    150 m range + 60° tilt zooms to individual building / street-corner level,
+    which is the right scale for scouting a specific photography location.
     """
-    return f'https://earth.google.com/web/@{lat},{lng},{altitude}a,800d,35y,0h,45t,0r'
+    return f'https://earth.google.com/web/@{lat},{lng},{altitude}a,150d,60t,0h,0r'
 
 
 # ---------------------------------------------------------------------------
@@ -1074,8 +1080,19 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
 # ---------------------------------------------------------------------------
 
 def create_google_maps_link(name, address, coordinates):
+    """Return the most precise Google Maps URL available.
+
+    Priority:
+      1. lat,lng pair  →  ?q=lat,lng   drops an exact pin, no guessing
+      2. address       →  /maps/search/ by address string
+      3. name          →  /maps/search/ by place name (least precise)
+    """
     if coordinates and ',' in str(coordinates):
-        return f"https://www.google.com/maps/search/{coordinates.replace(' ', '')}"
+        # Use ?q= to drop a precise pin at the coordinates rather than
+        # triggering a /maps/search/ which lets Google pick the nearest
+        # named place (often the wrong building).
+        coords_clean = str(coordinates).replace(' ', '')
+        return f"https://www.google.com/maps?q={coords_clean}"
     elif address:
         return f"https://www.google.com/maps/search/{address.replace(' ', '+').replace(',', '%2C')}"
     else:
