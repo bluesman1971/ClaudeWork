@@ -48,6 +48,7 @@ from database import engine, get_db, SessionLocal
 from models import Client, StaffUser, Trip, db
 from redis_client import get_redis
 from schemas import FinalizeRequest, GenerateRequest, ReplaceRequest
+from tool_schemas import ATTRACTION_TOOL, PHOTO_TOOL, RESTAURANT_TOOL
 from trips import trips_router
 
 # ---------------------------------------------------------------------------
@@ -353,17 +354,6 @@ def get_color_palette(location: str) -> dict:
     return COLOR_PALETTES.get(key, COLOR_PALETTES['default'])
 
 
-def _parse_json_lines(text: str, scout_name: str) -> list:
-    results = []
-    for line in text.strip().split('\n'):
-        line = line.strip()
-        if not line.startswith('{'):
-            continue
-        try:
-            results.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            logger.warning('%s: failed to parse JSON line (%s): %r', scout_name, exc, line[:120])
-    return results
 
 
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -691,19 +681,7 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: stunning, breathtaking, magical, enchanting, iconic, world-class, vibrant,
   nestled, boasting, hidden gem, off the beaten path, a feast for the senses, evocative, timeless.
 
-OUTPUT FORMAT — return EXACTLY this JSON schema for each location, one object per line, no markdown:
-{{
-  "day": [day number],
-  "time": "[time range, e.g., 6:30-7:30am]",
-  "name": "[Exact location name]",
-  "address": "[Full street address or neighbourhood]",
-  "coordinates": "[latitude, longitude or area description]",
-  "travel_time": "[Approx travel time from accommodation, e.g., '8 min walk' or '12 min metro'. Write 'N/A' if no accommodation was given.]",
-  "subject": "[1-2 sentences: what you are pointing the camera at and why it works for this client's interests. Specific — name the building, the gap between structures, the reflection pool.]",
-  "setup": "[2-3 sentences: where to stand, focal length, aperture if relevant, framing technique. Practical instructions a photographer can act on immediately.]",
-  "light": "[2 sentences: light direction, best window, what changes after that window closes. Facts, not poetry.]",
-  "pro_tip": "[1-2 sentences: one honest, actionable tip — crowd timing, a less-obvious angle, a technical setting, a seasonal caveat. Personalise to the client if possible.]"
-}}"""
+Use the submit_photo_locations tool to return all locations."""
 
     user_prompt = f"""Generate {count} photography locations ({per_day} per day), spread across {duration} days.
 
@@ -715,16 +693,22 @@ Trip details:
 {accommodation_block}
 {pre_planned_block}
 {client_block}
-Provide {count} complete JSON objects, one per line. No markdown, no other text."""
+Generate {count} photography locations ({per_day} per day across {duration} days)."""
 
     message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=6000,
+        tools=[PHOTO_TOOL],
+        tool_choice={'type': 'any'},
         system=system_prompt,
         messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    locations = _parse_json_lines(message.content[0].text, 'Photo Scout')
+    locations = []
+    for block in message.content:
+        if block.type == 'tool_use' and block.name == PHOTO_TOOL['name']:
+            locations = block.input.get('locations', [])
+            break
     logger.info('Photo Scout: parsed %d/%d locations for %s', len(locations), count, location)
     return key, locations
 
@@ -804,25 +788,9 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: culinary journey, gastronomic, tantalise, exquisite, artisanal, world-class,
   iconic, hidden gem, vibrant, buzzing, a feast for the senses, unforgettable.
 
-OUTPUT FORMAT — return EXACTLY this JSON schema for each restaurant, one object per line, no markdown:
-{{
-  "day": [day number],
-  "meal_type": "[breakfast/lunch/dinner]",
-  "name": "[Restaurant name]",
-  "address": "[Full address]",
-  "location": "[Neighbourhood]",
-  "cuisine": "[Cuisine type]",
-  "travel_time": "[Approx travel time from accommodation, e.g., '5 min walk' or '10 min taxi'. Write 'N/A' if no accommodation was given.]",
-  "description": "[2 sentences: what the place is and what to order. Specific — name the dish.]",
-  "price": "[$/$$/$$$/$$$$]",
-  "signature_dish": "[The one dish most worth ordering]",
-  "ambiance": "[1 sentence: what you find when you walk in — noise level, seating, clientele, formality.]",
-  "hours": "[Hours of operation]",
-  "why_this_client": "[1 sentence: specifically why this pick suits this client's profile. If no profile was given, write why it suits the stated cuisine/budget preferences.]",
-  "insider_tip": "[1-2 sentences: reservation advice, best seat, timing, or one thing most visitors miss.]"
-}}
+Price scale: $ = budget/street food, $$ = moderate, $$$ = moderately expensive, $$$$ = fine dining / splurge.
 
-Price scale: $ = budget/street food, $$ = moderate, $$$ = moderately expensive, $$$$ = fine dining / splurge."""
+Use the submit_restaurants tool to return all restaurants."""
 
     user_prompt = f"""Generate {count} restaurant recommendations ({per_day} per day across {duration} days),
 covering breakfast, lunch, and dinner in a sensible rotation.
@@ -836,16 +804,22 @@ Trip details:
 {accommodation_block}
 {pre_planned_block}
 {client_block}
-Provide {count} complete JSON objects, one per line. No markdown, no other text."""
+Generate {count} restaurant recommendations ({per_day} per day across {duration} days)."""
 
     message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
+        tools=[RESTAURANT_TOOL],
+        tool_choice={'type': 'any'},
         system=system_prompt,
         messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    restaurants = _parse_json_lines(message.content[0].text, 'Restaurant Scout')
+    restaurants = []
+    for block in message.content:
+        if block.type == 'tool_use' and block.name == RESTAURANT_TOOL['name']:
+            restaurants = block.input.get('restaurants', [])
+            break
     logger.info('Restaurant Scout: parsed %d/%d restaurants for %s', len(restaurants), count, location)
     return key, restaurants
 
@@ -927,24 +901,7 @@ WRITING STYLE — follow this strictly:
 - Forbidden words: stunning, breathtaking, magical, iconic, world-class, unmissable, legendary,
   nestled, boasting, rich history, vibrant, hidden gem, off the beaten path.
 
-OUTPUT FORMAT — return EXACTLY this JSON schema for each attraction, one object per line, no markdown:
-{
-  "day": [day number],
-  "time": "[time slot, e.g., 9:00-11:00am]",
-  "name": "[Attraction name]",
-  "address": "[Full address]",
-  "category": "[Type: museum / market / viewpoint / park / etc.]",
-  "location": "[Neighbourhood]",
-  "travel_time": "[Approx travel time from accommodation, e.g., '15 min metro' or '6 min walk'. Write 'N/A' if no accommodation was given.]",
-  "description": "[2 sentences: what it is and the one thing that makes it worth this client's time. Honest — include any caveat.]",
-  "admission": "[Free / price range]",
-  "hours": "[Opening hours]",
-  "duration": "[Realistic visit length]",
-  "best_time": "[Specific: e.g., 'Weekday mornings before 10am' or 'Late afternoon when tour groups leave']",
-  "why_this_client": "[1 sentence: specifically why this attraction suits this client's profile or interests.]",
-  "highlight": "[The single best thing — be specific, not generic]",
-  "insider_tip": "[1-2 sentences: one piece of practical advice most visitors don't know.]"
-}"""
+Use the submit_attractions tool to return all attractions."""
 
     user_prompt = f"""Generate {count} attractions ({per_day} per day across {duration} days).
 
@@ -957,16 +914,22 @@ Trip details:
 {accommodation_block}
 {pre_planned_block}
 {client_block}
-Provide {count} complete JSON objects, one per line. No markdown, no other text."""
+Generate {count} attractions ({per_day} per day across {duration} days)."""
 
     message = await anthropic_client.messages.create(
         model=SCOUT_MODEL,
         max_tokens=5000,
+        tools=[ATTRACTION_TOOL],
+        tool_choice={'type': 'any'},
         system=system_prompt,
         messages=[{'role': 'user', 'content': user_prompt}],
     )
 
-    attractions = _parse_json_lines(message.content[0].text, 'Attraction Scout')
+    attractions = []
+    for block in message.content:
+        if block.type == 'tool_use' and block.name == ATTRACTION_TOOL['name']:
+            attractions = block.input.get('attractions', [])
+            break
     logger.info('Attraction Scout: parsed %d/%d attractions for %s', len(attractions), count, location)
     return key, attractions
 
@@ -2503,128 +2466,71 @@ async def replace_item(
         day_context = f'Day {day} of a {duration}-day trip.'
 
         if item_type == 'photos':
-            system_prompt = """You are a photography location scout.
-Find ONE real, currently accessible photography location that has NOT already been suggested.
-Return EXACTLY one JSON object, no markdown, no other text:
-{
-  "day": [day number],
-  "time": "[best time range]",
-  "name": "[Exact location name]",
-  "address": "[Full street address]",
-  "coordinates": "[lat, lng or area]",
-  "travel_time": "N/A",
-  "subject": "[What to photograph and why it works — be specific]",
-  "setup": "[Where to stand, focal length, framing — actionable]",
-  "light": "[Light direction and optimal window — factual]",
-  "pro_tip": "[One honest, actionable tip]"
-}"""
+            replace_tool = PHOTO_TOOL
+            items_key    = 'locations'
+            system_prompt = "You are a photography location scout. Find ONE real, currently accessible photography location that has NOT already been suggested."
             user_prompt = f"""Find one photography location in {location}.
 
 {exclude_block}
 Context: {day_context}
 Photography interests: {interests or 'general'}
-Budget: {budget} | Travel radius: {distance}"""
+Budget: {budget} | Travel radius: {distance}
+Set day={day} and travel_time="N/A"."""
 
         elif item_type == 'restaurants':
+            replace_tool = RESTAURANT_TOOL
+            items_key    = 'restaurants'
             meal_hint = f'This should be a {meal_type} option.' if meal_type else ''
             diet_hint = ''
             if client_profile and client_profile.get('dietary_requirements'):
-                diet_hint = f"DIETARY HARD CONSTRAINT — never suggest anything incompatible with: {client_profile['dietary_requirements']}"
-            system_prompt = f"""You are a dining guide writer.
-Find ONE real restaurant that has NOT already been suggested.
-{diet_hint}
-Return EXACTLY one JSON object, no markdown, no other text:
-{{
-  "day": [day number],
-  "meal_type": "[breakfast/lunch/dinner]",
-  "name": "[Restaurant name]",
-  "address": "[Full address]",
-  "location": "[Neighbourhood]",
-  "cuisine": "[Cuisine type]",
-  "travel_time": "N/A",
-  "description": "[2 sentences: what it is and what to order — name the dish]",
-  "price": "[$/$$/$$$/$$$$]",
-  "signature_dish": "[The one dish worth ordering]",
-  "ambiance": "[1 sentence: what you find when you walk in]",
-  "hours": "[Hours]",
-  "why_this_client": "[Why this suits the stated preferences]",
-  "insider_tip": "[One piece of practical advice]"
-}}"""
+                diet_hint = f"DIETARY HARD CONSTRAINT — never suggest anything incompatible with: {client_profile['dietary_requirements']}\n"
+            system_prompt = f"You are a dining guide writer. Find ONE real restaurant that has NOT already been suggested.\n{diet_hint}"
             user_prompt = f"""Find one restaurant in {location}.
 
 {exclude_block}
 Context: {day_context} {meal_hint}
 Cuisine preferences: {cuisines_str or 'any local'}
-Budget: {budget} | Travel radius: {distance}"""
+Budget: {budget} | Travel radius: {distance}
+Set day={day} and travel_time="N/A"."""
 
         else:  # attractions
-            system_prompt = """You are a travel writer.
-Find ONE real, currently accessible attraction that has NOT already been suggested.
-Return EXACTLY one JSON object, no markdown, no other text:
-{
-  "day": [day number],
-  "time": "[time slot]",
-  "name": "[Attraction name]",
-  "address": "[Full address]",
-  "category": "[Type]",
-  "location": "[Neighbourhood]",
-  "travel_time": "N/A",
-  "description": "[2 sentences: what it is and why it is worth the visit]",
-  "admission": "[Free / price]",
-  "hours": "[Hours]",
-  "duration": "[Realistic visit length]",
-  "best_time": "[Specific time advice]",
-  "why_this_client": "[Why this suits the stated preferences]",
-  "highlight": "[Single best specific thing]",
-  "insider_tip": "[One practical tip most visitors miss]"
-}"""
+            replace_tool = ATTRACTION_TOOL
+            items_key    = 'attractions'
+            system_prompt = "You are a travel writer. Find ONE real, currently accessible attraction that has NOT already been suggested."
             user_prompt = f"""Find one attraction in {location}.
 
 {exclude_block}
 Context: {day_context}
 Attraction interests: {categories or 'general sightseeing'}
-Budget: {budget} | Travel radius: {distance}"""
+Budget: {budget} | Travel radius: {distance}
+Set day={day} and travel_time="N/A"."""
 
         logger.info('Replace: type=%s idx=%d day=%d location=%s excluded=%d',
                     item_type, item_idx, day, location, len(exclude_names))
 
         message = await anthropic_client.messages.create(
             model=SCOUT_MODEL,
-            max_tokens=1200,
+            max_tokens=1500,
+            tools=[replace_tool],
+            tool_choice={'type': 'any'},
             system=system_prompt,
             messages=[{'role': 'user', 'content': user_prompt}],
         )
 
-        raw_text = ''
+        new_item = None
         for block in message.content:
-            block_text = getattr(block, 'text', None)
-            if block_text:
-                raw_text = str(block_text).strip()
+            if block.type == 'tool_use' and block.name == replace_tool['name']:
+                candidates = block.input.get(items_key, [])
+                if candidates:
+                    new_item = candidates[0]
                 break
 
-        # Strip markdown code fences
-        if raw_text.startswith('```'):
-            parts    = raw_text.split('```', 2)
-            inner    = parts[1] if len(parts) >= 2 else raw_text
-            if inner.startswith('json'):
-                inner = inner[4:]
-            raw_text = inner.strip()
-
-        items = _parse_json_lines(raw_text, 'Replace Scout')
-        if not items:
-            try:
-                items = [json.loads(raw_text)]
-            except Exception:
-                pass
-
-        if not items:
-            logger.warning('Replace Scout: failed to parse response for %s idx=%d', item_type, item_idx)
+        if not new_item:
+            logger.warning('Replace Scout: no tool use block for %s idx=%d', item_type, item_idx)
             raise HTTPException(
                 status_code=422,
                 detail='Could not find an alternative. Try again or toggle this item off.',
             )
-
-        new_item = items[0]
 
         # ── Places verification ───────────────────────────────────────────────
         if PLACES_VERIFY_ENABLED:

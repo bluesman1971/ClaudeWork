@@ -4,6 +4,33 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 5] Claude tool use for structured scout output — 2026-03-05
+
+### What changed
+All three scout functions (`call_photo_scout`, `call_restaurant_scout`, `call_attraction_scout`) and the `/replace` endpoint now use Claude's structured tool use instead of text-completion with embedded JSON schemas. This eliminates the markdown-fence stripping and `_parse_json_lines` fallback that were the main sources of silent parse failures.
+
+### New file
+| File | Purpose |
+|---|---|
+| `tool_schemas.py` | Three tool definitions (`PHOTO_TOOL`, `RESTAURANT_TOOL`, `ATTRACTION_TOOL`). Each tool accepts an array of items so the same schema works for both the main scouts (N items) and `/replace` (one item, callers take `[0]`). |
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `app.py` | Added `from tool_schemas import …`; replaced all three scout `messages.create()` calls to include `tools=[…], tool_choice={"type": "any"}`; replaced `_parse_json_lines(…)` with `for block in message.content: if block.type == "tool_use" …` extraction; replaced `/replace` inline JSON schemas with compact persona prompts and the same tool-use pattern; deleted `_parse_json_lines` (now dead code) |
+
+### Why tool use over text-completion
+- **Guaranteed structure**: `tool_choice={"type": "any"}` forces Claude to call the tool — no text preamble, no markdown fences, no trailing prose to strip.
+- **No parse fallbacks needed**: `block.input` is already a Python dict; `json.loads` and the two-stage fallback are gone.
+- **Schema as documentation**: Field descriptions in `tool_schemas.py` replace the inline JSON examples that were duplicated across system prompts.
+- **Zero new dependencies**: Uses the existing `AsyncAnthropic` client.
+
+### Migration notes
+- No database or environment changes. Drop-in replacement — callers see identical item dicts.
+- `_parse_json_lines` is deleted. If you need to parse legacy cached responses, the function was: `[json.loads(l) for l in text.split('\n') if l.strip().startswith('{')]`.
+
+---
+
 ## [Phase 4] Alembic schema migrations — 2026-03-01
 
 ### What changed

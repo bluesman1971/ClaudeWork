@@ -207,7 +207,7 @@ Railway's "release phase" command runs before the web process starts on every de
 
 ---
 
-## Phase 5 — Claude tool use for structured output (1 day)
+## Phase 5 — Claude tool use for structured output ✅ COMPLETE (deployed 2026-03-05)
 ### Eliminate fragile JSON parsing in /replace
 
 **Why fifth:** Requires Phase 2 (FastAPI + async Anthropic client) to be in place. Low-risk improvement to reliability.
@@ -318,7 +318,7 @@ Railway runs this before starting the web process.
 | 2 — FastAPI | ✅ done | Medium | Async scouts, Pydantic validation, eliminates manual sanitisation scattered across files |
 | 3 — Async job queue | ✅ done | Low | /generate returns instantly; frontend polls /jobs/{id}; server streams status messages |
 | 4 — Alembic | ✅ done | Low | Schema changes tracked in version control; `release: alembic upgrade head` in Procfile |
-| 5 — Tool use | 1 day | Low | Structured AI output; eliminates /replace parsing fragility |
+| 5 — Tool use | ✅ done | Low | Structured AI output via tool_schemas.py; eliminates markdown stripping and _parse_json_lines |
 | 6 — Frontend split | 2–3 days | Low | Maintainable, testable JS; easy to add mobile or white-label surface later |
 | **Total** | **~2.5 weeks** | | **Production-grade, future-proof architecture** |
 
