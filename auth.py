@@ -282,7 +282,7 @@ async def login(
     token = _encode_token(user.id)
     _set_auth_cookie(response, token)
 
-    logger.info("Login: user %d (%s) authenticated", user.id, user.email)
+    logger.info("Login: user_id=%d authenticated", user.id)
     return {'status': 'ok', 'user': user.to_dict()}
 
 

@@ -4,6 +4,40 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 7] Security hardening — 2026-03-05
+
+### What changed
+Four targeted security improvements applied before the photography pivot work begins.
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `app.py` | CORS: replaced hardcoded localhost default with environment-aware logic — localhost origins only allowed when `FLASK_ENV != 'production'`; production with no `CORS_ORIGINS` set defaults to deny-all. Added `Content-Security-Policy` header to the existing security middleware. Added `_is_production` module-level flag (reused by both CORS and HSTS). |
+| `auth.py` | Removed `user.email` from the login success log message — replaced with `user_id` only to prevent PII appearing in Railway log streams. |
+| `requirements.txt` | Pinned `anthropic` from `>=0.40.0` to `==0.80.0` (version confirmed from local venv). |
+
+### Content Security Policy details
+```
+default-src 'self';
+script-src 'self' 'unsafe-inline';   ← see note below
+style-src 'self' 'unsafe-inline';    ← required: srcdoc iframe inherits parent CSP; guide HTML has <style> blocks
+img-src 'self' data: https://maps.googleapis.com https://maps.gstatic.com;
+font-src 'self';
+connect-src 'self';
+frame-src 'self';
+object-src 'none';
+base-uri 'self';
+form-action 'self';
+```
+`'unsafe-inline'` in `script-src` is required because `index.html` and `review.js` use inline `onclick`/`onsubmit` attributes. A TODO comment is in place — when Phase 4 converts all inline handlers to `addEventListener` calls, `'unsafe-inline'` can be removed from `script-src` for full XSS protection.
+
+### Migration notes
+- **CORS in production**: ensure `CORS_ORIGINS` is set in your Railway environment variables to your production domain (e.g. `https://myapp.railway.app`). If left unset in production, cross-origin requests will be denied (safe default — the frontend is same-origin).
+- No database or schema changes.
+- No frontend changes.
+
+---
+
 ## [Phase 6] Frontend split — 2026-03-05
 
 ### What changed

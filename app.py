@@ -73,13 +73,30 @@ BASE_DIR = os.path.dirname(__file__)
 app = FastAPI(title='Trip Master API', docs_url=None, redoc_url=None)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
-_cors_origins = [
+# Production: set CORS_ORIGINS to your Railway domain (e.g. https://app.railway.app).
+# Development: if CORS_ORIGINS is unset and we are not in production, localhost
+#              origins are allowed automatically so local dev requires no .env change.
+_is_production = os.getenv('FLASK_ENV') == 'production'
+_cors_origins_env = [
     o.strip()
-    for o in os.getenv(
-        'CORS_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000'
-    ).split(',')
+    for o in os.getenv('CORS_ORIGINS', '').split(',')
     if o.strip()
 ]
+if _cors_origins_env:
+    _cors_origins = _cors_origins_env
+elif not _is_production:
+    _cors_origins = [
+        'http://localhost:5000',
+        'http://127.0.0.1:5000',
+        'http://localhost:8000',
+        'http://127.0.0.1:8000',
+    ]
+else:
+    # Production with no CORS_ORIGINS set: deny all cross-origin requests.
+    # The frontend is served by FastAPI itself (same origin), so CORS is not
+    # needed unless you have a separate frontend domain.
+    _cors_origins = []
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -89,15 +106,43 @@ app.add_middleware(
 )
 
 # ── Security headers ──────────────────────────────────────────────────────────
+# Content-Security-Policy notes:
+#   • script-src includes 'unsafe-inline' because index.html and review.js use
+#     inline onclick/onsubmit attributes (window.* exports from main.js).
+#     TODO (Phase 4 frontend hardening): replace all inline handlers with
+#     addEventListener calls so 'unsafe-inline' can be removed from script-src.
+#   • style-src includes 'unsafe-inline' because the /finalize HTML guide
+#     (rendered via iframe srcdoc) contains <style> blocks. Srcdoc iframes
+#     inherit the parent CSP, so 'unsafe-inline' is required for those styles.
+#   • img-src includes data: for base64-embedded static map images and
+#     maps.googleapis.com / maps.gstatic.com for the tile origins.
+#   • connect-src 'self' restricts XHR/fetch to same origin only.
+#   • object-src 'none' blocks Flash and other plugin-based attack vectors.
+#   • base-uri 'self' prevents <base> tag hijacking.
+#   • form-action 'self' prevents forms from submitting to external domains.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https://maps.googleapis.com https://maps.gstatic.com; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "frame-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self';"
+)
+
 @app.middleware('http')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers['X-Content-Type-Options']  = 'nosniff'
-    response.headers['X-Frame-Options']          = 'DENY'
-    response.headers['X-XSS-Protection']         = '1; mode=block'
-    response.headers['Referrer-Policy']           = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy']        = 'geolocation=(), microphone=(), camera=()'
-    if os.getenv('FLASK_ENV') == 'production':
+    response.headers['X-Content-Type-Options']     = 'nosniff'
+    response.headers['X-Frame-Options']             = 'DENY'
+    response.headers['X-XSS-Protection']            = '1; mode=block'
+    response.headers['Referrer-Policy']              = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy']           = 'geolocation=(), microphone=(), camera=()'
+    response.headers['Content-Security-Policy']      = _CSP
+    if _is_production:
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return response
 

@@ -23,15 +23,15 @@ The photography pivot removes the restaurant and attraction scouts entirely and 
 
 ---
 
-## Phase 1 — Security Hardening
-*Independent of the pivot. Do first. Estimated: 1–2 days.*
+## Phase 1 — Security Hardening ✅ Complete
+*Independent of the pivot. Completed 2026-03-05.*
 
 | # | Task | File(s) | Status |
 |---|------|---------|--------|
-| 1.1 | Tighten CORS — split dev/prod `allow_origins` via env var, remove localhost from production | `app.py` | `[ ]` |
-| 1.2 | Pin `anthropic` to a specific version (currently `>=0.40.0`) | `requirements.txt` | `[ ]` |
-| 1.3 | Audit logging calls — replace any `client.email`, `client.phone`, `notes` in log messages with reference codes (e.g., `CLT-042`) | `app.py`, `trips.py`, `clients.py` | `[ ]` |
-| 1.4 | Add Content Security Policy (CSP) header to security middleware — must include `img-src 'self' data:` for base64 maps and appropriate `frame-src` for output iframe | `app.py` | `[ ]` |
+| 1.1 | Tighten CORS — split dev/prod `allow_origins` via env var, remove localhost from production | `app.py` | `[x]` |
+| 1.2 | Pin `anthropic` to a specific version (was `>=0.40.0`, pinned to `==0.80.0`) | `requirements.txt` | `[x]` |
+| 1.3 | Audit logging calls — found and removed `user.email` from login log in `auth.py:285`. All other log calls use IDs and reference codes only (no PII). | `auth.py` | `[x]` |
+| 1.4 | Add Content Security Policy (CSP) header to security middleware. Note: `script-src` retains `'unsafe-inline'` due to inline `onclick` handlers throughout `index.html` and dynamically built `innerHTML` in `review.js`. See TODO in `app.py` comment — remove when handlers are converted to `addEventListener` in Phase 4 frontend refactor. | `app.py` | `[x]` |
 
 ---
 
@@ -148,6 +148,7 @@ def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
 | Date | Session Summary | Next Steps |
 |------|----------------|------------|
 | 2026-03-05 | Plan created. Security + photography pivot architecture finalized. | Start Phase 1 (CORS, pin deps) |
+| 2026-03-05 | Phase 1 complete. CORS split dev/prod, `anthropic` pinned to `==0.80.0`, PII removed from login log, CSP header added to security middleware. `unsafe-inline` retained in `script-src` due to inline onclick handlers — flagged as TODO for Phase 4. | Start Phase 2 (DB schema: GearProfile model + Trip date fields) |
 
 ---
 
