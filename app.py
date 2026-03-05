@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -2158,7 +2159,10 @@ def generate_master_html(location, duration, photos, restaurants, attractions, c
 
 @app.get('/')
 async def index():
-    return FileResponse(os.path.join(BASE_DIR, 'index.html'))
+    return FileResponse(os.path.join(BASE_DIR, 'frontend', 'index.html'))
+
+# Serve frontend JS modules and CSS at /src/*
+app.mount('/src', StaticFiles(directory=os.path.join(BASE_DIR, 'frontend', 'src')), name='frontend-src')
 
 
 @app.get('/health')

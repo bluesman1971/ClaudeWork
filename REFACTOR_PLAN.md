@@ -248,7 +248,7 @@ Once `/replace` is stable, apply the same pattern to the three main scouts. The 
 
 ---
 
-## Phase 6 — Frontend split (2–3 days)
+## Phase 6 — Frontend split ✅ COMPLETE (deployed 2026-03-05)
 ### Separate the ~3000-line index.html into a proper frontend project
 
 **Why last:** Zero impact on reliability or security. Pure developer experience and maintainability improvement. By this phase the backend API is stable, so the frontend can be rebuilt against a clean contract.
@@ -319,7 +319,7 @@ Railway runs this before starting the web process.
 | 3 — Async job queue | ✅ done | Low | /generate returns instantly; frontend polls /jobs/{id}; server streams status messages |
 | 4 — Alembic | ✅ done | Low | Schema changes tracked in version control; `release: alembic upgrade head` in Procfile |
 | 5 — Tool use | ✅ done | Low | Structured AI output via tool_schemas.py; eliminates markdown stripping and _parse_json_lines |
-| 6 — Frontend split | 2–3 days | Low | Maintainable, testable JS; easy to add mobile or white-label surface later |
+| 6 — Frontend split | ✅ done | Low | Maintainable, testable JS; easy to add mobile or white-label surface later |
 | **Total** | **~2.5 weeks** | | **Production-grade, future-proof architecture** |
 
 Each phase ships independently. If priorities shift after Phase 2, Phases 3–6 can be reordered or deferred without leaving the app in a broken state.
