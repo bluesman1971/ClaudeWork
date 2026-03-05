@@ -4,7 +4,7 @@
 
 Trip Master is an internal tool for travel consultants. A logged-in staff member enters a destination, trip duration, and preferences (photography spots, restaurants, attractions). The app calls the Anthropic Claude API to generate curated recommendations for each category, optionally verifies each venue is still open via the Google Places API, then assembles a formatted HTML travel guide the consultant can review and save.
 
-The app is a single-service, full-stack web app: the FastAPI backend serves both the API routes **and** the frontend HTML page from the same Railway URL.
+The app is a single-service, full-stack web app: the FastAPI backend serves both the API routes **and** the frontend from the same Railway URL.
 
 ---
 
@@ -21,12 +21,32 @@ trip-guide-app/
 ├── schemas.py          # Pydantic v2 request/response models (validation)
 ├── database.py         # SQLAlchemy engine, SessionLocal, get_db dependency
 ├── redis_client.py     # Redis connection, SessionStore, Cache, rate limiters
+├── tool_schemas.py     # Claude tool definitions for structured scout output
 ├── manage.py           # Click CLI — create-user admin command
 │
-├── index.html          # Single-page frontend (vanilla JS, no framework)
+├── frontend/
+│   ├── index.html      # HTML shell — all markup, no inline CSS or JS
+│   └── src/
+│       ├── main.js         # Entry point: imports all modules, window exports, bootstrap
+│       ├── state.js        # Shared mutable state object + constants (API_URL, etc.)
+│       ├── api.js          # apiFetch wrapper, checkAuth, handleLogin, handleLogout
+│       ├── form.js         # Form controls, progress animation, resetForm, showError
+│       ├── generate.js     # Form submit handler and async job polling
+│       ├── review.js       # Review screen: toggle, bulk select, edit panel, replace
+│       ├── finalize.js     # Final guide generation and display
+│       ├── clients.js      # Client CRM: list, create modal
+│       ├── trips.js        # Saved trips panel: list, load, toggle
+│       └── styles/
+│           └── main.css    # All styles (extracted from the original index.html)
+│
+├── migrations/         # Alembic migration scripts
+│   ├── env.py          # Alembic environment — imports db.metadata, reads DATABASE_URL
+│   └── versions/       # One file per schema revision
+│
+├── index.html          # Original monolithic file — retained but no longer served
 │
 ├── wsgi.py             # Stub re-export kept for tooling compatibility
-├── Procfile            # Railway/Gunicorn startup command
+├── Procfile            # Railway/Gunicorn startup + Alembic release phase
 ├── runtime.txt         # Pins Python version for Railway (python-3.11.9)
 ├── requirements.txt    # All Python dependencies with pinned versions
 │
@@ -98,7 +118,7 @@ Authentication is handled entirely in `auth.py`.
 6. The `get_current_user` FastAPI dependency validates the cookie on every protected route, loads the user from the database, then slides the token expiry (re-issues a fresh 8-hour cookie on each request so active sessions don't expire mid-use)
 
 ### CSRF defence
-All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-With: XMLHttpRequest` header. The browser never attaches this header automatically on cross-site requests, so it cannot be forged by a malicious third-party page even if it can trigger a request with the user's session cookie. The `apiFetch()` wrapper in `index.html` adds this header to every call automatically.
+All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-With: XMLHttpRequest` header. The browser never attaches this header automatically on cross-site requests, so it cannot be forged by a malicious third-party page even if it can trigger a request with the user's session cookie. The `apiFetch()` wrapper in `frontend/src/api.js` adds this header to every call automatically.
 
 **Important when calling the API programmatically (e.g. curl or test scripts):** you must include both the `tm_token` cookie and the `X-Requested-With: XMLHttpRequest` header on all POST/PUT/DELETE requests, or you will receive HTTP 403.
 
@@ -139,7 +159,7 @@ The core feature is the `/generate` endpoint in `app.py`. When a consultant clic
    - `call_photo_scout` — photography locations with timing, setup, and pro tips
    - `call_restaurant_scout` — dining recommendations with cuisine, price range, and booking notes; respects dietary requirements as a hard constraint
    - `call_attraction_scout` — sightseeing with practical visit info; avoids duplicating pre-planned commitments
-5. **Each scout** sends a structured prompt to Claude Haiku via `AsyncAnthropic` and parses the response as JSON lines (one JSON object per line). Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
+5. **Each scout** sends a prompt to Claude Haiku via `AsyncAnthropic` using structured tool use (`tools=[TOOL], tool_choice={"type": "any"}`). Claude is forced to call the tool, returning a typed `block.input` dict — no JSON parsing, no markdown-fence stripping needed. Tool schemas live in `tool_schemas.py`. Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
 6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API using `httpx.AsyncClient`. Permanently closed venues are filtered out. Verification calls run concurrently inside each scout using `asyncio.gather()`
 7. **Retry logic** — if a scout returns 0 results (parse failure or all venues filtered), it retries up to 2 more times with a 1-second delay between attempts
 8. **Session store** — verified results are stored in Redis (keyed by UUID, 1-hour TTL) via the `SessionStore` wrapper in `redis_client.py`. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker. Falls back to an in-memory dict if Redis is unreachable
@@ -173,14 +193,13 @@ The review screen lets consultants request one alternative for any item they dis
 2. The endpoint resolves the original trip parameters (location, budget, distance, cuisine/interest preferences) from the DB `Trip` record — this is intentional for multi-worker safety (avoids relying on the in-memory session store which may not be present on the worker handling this request)
 3. The client profile is reloaded from the DB if the trip has a `client_id`
 4. **Exclusion list is rebuilt server-side:** `_names_from_raw()` parses the relevant `raw_*` JSON column from the DB `Trip` record and extracts the `"name"` field from each stored item. This means the exclusion list is always built from server-generated, verified data — not client-supplied text. The client's `exclude_names` payload is only used as a sanitised fallback when no DB trip record is available (rare in-memory-only case). This eliminates the injection surface that existed when client-supplied names were placed verbatim into the prompt.
-5. The Anthropic API is called with `max_tokens=1200`
-6. **Response parsing:** The model sometimes wraps output in markdown code fences (` ```json ... ``` `). The endpoint strips these before attempting JSON parsing. It first tries `_parse_json_lines()` (for responses where the JSON is on a single line), then falls back to `json.loads()` (for pretty-printed multi-line responses)
-7. Google Places verification runs on the replacement if enabled
+5. The Anthropic API is called with `max_tokens=1200` using structured tool use — the same `PHOTO_TOOL`/`RESTAURANT_TOOL`/`ATTRACTION_TOOL` schemas from `tool_schemas.py`. `tool_choice={"type": "any"}` guarantees a tool call, so no markdown-fence stripping or JSON parsing is needed; `block.input` is a ready-to-use Python dict
+6. Google Places verification runs on the replacement if enabled
 8. The DB `Trip` record's relevant `raw_*` JSON array is updated at the given index
 9. The in-memory session store is also updated if still alive
 10. Returns `{ "item": { ...scout item dict... } }`
 
-**Frontend integration (`index.html`):**
+**Frontend integration (`frontend/src/review.js`):**
 
 - `buildReviewItem(type, item, idx)` — builds a wrapper div containing the item row and a hidden inline edit panel. Each item row has two action buttons: **Edit** and **Alt**
 - `toggleEditPanel(type, idx)` — opens/closes the inline edit panel; focuses the name input on open
@@ -264,18 +283,19 @@ Saved travel guide records. Stores both the raw AI output and the final HTML.
 For SQLite (local dev only), WAL (Write-Ahead Logging) mode is enabled on every new connection via `sqlalchemy.event.listen`. This allows concurrent readers and a single writer simultaneously, which prevents "database is locked" errors during local testing.
 
 ### Schema migrations
-`db.metadata.create_all(engine)` runs at startup (in `app.py`'s startup event handler) and creates any tables that don't yet exist. It does **not** add new columns to existing tables.
+Schema changes are managed by **Alembic** (added in Phase 4). The `Procfile` `release:` phase runs `alembic upgrade head` before the web process starts on every Railway deploy, so migrations are applied automatically with zero downtime.
 
-To handle this, `app.py` runs a list of `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements immediately after table creation. This is safe to re-run on every startup — PostgreSQL's `IF NOT EXISTS` clause is a no-op if the column already exists. SQLite doesn't support `IF NOT EXISTS` on `ADD COLUMN`, so the migration block catches and logs the exception without crashing.
+`db.metadata.create_all(engine)` still runs at startup as a safety net for fresh databases (creates any tables that don't yet exist). The old manual `_migrations` list of `ALTER TABLE IF NOT EXISTS` statements has been deleted — Alembic handles all schema evolution from this point.
 
-**When adding a new column to an existing model:** add the column to `models.py` as usual, then add a corresponding `ALTER TABLE <table> ADD COLUMN IF NOT EXISTS <col> <type>` entry to the `_migrations` list in `app.py`. The column will be created on the next deploy.
-
-Current migrations (as of this version):
-```python
-_migrations = [
-    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS dietary_requirements TEXT",
-    "ALTER TABLE trips   ADD COLUMN IF NOT EXISTS accommodation VARCHAR(500)",
-]
+**When adding a new column to an existing model:**
+```bash
+# 1. Edit models.py (add the Column)
+# 2. Generate the migration
+alembic revision --autogenerate -m "add foo column to trips"
+# 3. Review the file generated in migrations/versions/
+# 4. Apply locally
+alembic upgrade head
+# 5. Push — Railway release phase runs alembic upgrade head automatically
 ```
 
 ---
@@ -318,7 +338,8 @@ All routes except `/`, `/health`, and `/auth/login` require authentication (vali
 ### Public
 | Method | Path | Description |
 |---|---|---|
-| GET | `/` | Serves `index.html` (the frontend SPA) |
+| GET | `/` | Serves `frontend/index.html` (the frontend shell) |
+| GET | `/src/*` | Static mount — serves `frontend/src/` ES modules and CSS |
 | GET | `/health` | Health check — returns JSON with status and model name |
 | POST | `/auth/login` | Login — `{ email, password }` → sets httpOnly cookie |
 | POST | `/auth/logout` | Clears the auth cookie |
@@ -458,12 +479,10 @@ Railway → your service → **Deployments** → click the active deployment →
 
 ## Known limitations and future work
 
-- **Schema migrations are append-only** — the `_migrations` list in `app.py` handles adding new columns to existing tables automatically on startup. However, renaming or removing columns, adding constraints, or changing column types still requires manual intervention (run the SQL directly in the Supabase dashboard). For complex schema evolution, adopt Flask-Migrate / Alembic.
-
-- **Single-file frontend** — `index.html` is a large single file containing all HTML, CSS, and JavaScript. It works well but would benefit from being split into components if the UI grows significantly.
+- **Schema migrations — destructive changes need manual SQL** — Alembic handles adding columns and tables automatically. However, renaming or removing columns, adding constraints, or changing column types still requires writing the migration by hand (`alembic revision -m "..."` then editing the generated file). Run the migration locally with `alembic upgrade head` before pushing to Railway.
 
 - **No email delivery** — there is no password reset flow. Forgotten passwords require an admin to create a new account or update the hash directly in the database.
 
-- **AI provider is single-vendor and single-model** — all three scouts use the same Anthropic model, set via the `SCOUT_MODEL` environment variable. Switching to a different Anthropic model is trivial (just update the env var). Switching to a different provider (OpenAI, Google Gemini, etc.) requires changing the client initialisation in `app.py` and updating the API call and response extraction in each of the three scout functions and the `/replace` endpoint — roughly 8–10 lines of code plus a `requirements.txt` change. The prompts, retry logic, and JSON parsing are all provider-agnostic and would not need to change.
+- **AI provider is single-vendor and single-model** — all three scouts use the same Anthropic model, set via the `SCOUT_MODEL` environment variable. Switching to a different Anthropic model is trivial (just update the env var). Switching to a different provider (OpenAI, Google Gemini, etc.) requires changing the client initialisation in `app.py`, porting the tool schemas in `tool_schemas.py` to the target provider's tool-use format, and updating the response extraction in each scout and `/replace` — roughly 15–20 lines of code plus a `requirements.txt` change. The prompts, retry logic, and downstream item processing are all provider-agnostic and would not need to change.
 
 - **API cost** — Claude Haiku is the cheapest Anthropic model and was chosen deliberately to keep per-generation costs low, but each "Generate" click makes three separate API calls (one per scout), each with a large prompt and up to ~6,000 output tokens. High-volume usage will accumulate meaningful API costs. Monitor usage in the Anthropic console. If cost becomes a concern, options include: reducing `PHOTOS_PER_DAY`, `RESTAURANTS_PER_DAY`, and `ATTRACTIONS_PER_DAY` constants in `app.py`; capping `max_tokens` on each scout call; switching to a smaller/cheaper model via `SCOUT_MODEL`; or implementing a stricter server-side cache (currently results are cached 1 hour per location+duration+preferences+client profile combination, so repeat searches are free).
