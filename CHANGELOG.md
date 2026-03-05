@@ -4,6 +4,59 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 8] Database schema pivot — GearProfile + Trip dates — 2026-03-05
+
+### What changed
+Introduces the `GearProfile` model (photographer's gear vault) and adds exact
+shoot date support to trips, in preparation for the photography assistant pivot.
+
+### New model: `GearProfile`
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | |
+| `staff_user_id` | Integer FK → staff_users | indexed |
+| `name` | String(100) | e.g. "Travel Kit", "Full Studio" |
+| `camera_type` | String(50) | one of 7 enum values in `CAMERA_TYPES` |
+| `lenses` | Text | JSON array of focal-length strings |
+| `has_tripod` | Boolean | |
+| `has_filters` | Text | JSON array of filter-type strings |
+| `has_gimbal` | Boolean | phone/video stabilizer |
+| `notes` | Text | free-text kit notes |
+| `created_at` / `updated_at` | DateTime | |
+
+A `StaffUser` may have many `GearProfile` records (cascade delete). A `Trip` may
+link to one `GearProfile` via `gear_profile_id` (nullable FK).
+
+### Modified model: `Trip`
+| Change | Detail |
+|---|---|
+| `duration` | Made nullable — new trips use `start_date`/`end_date` instead |
+| `start_date` | New `Date` column (nullable) |
+| `end_date` | New `Date` column (nullable) |
+| `gear_profile_id` | New nullable FK → `gear_profiles` |
+| `duration_days` | New Python `@property` — returns `(end_date - start_date).days + 1` when dates set, otherwise falls back to stored `duration` integer |
+| `to_dict()` | Now outputs `start_date`, `end_date`, `gear_profile_id`; `duration` key uses `duration_days` |
+
+### New migration: `dcc6439ee150`
+Creates `gear_profiles` table and modifies `trips` in a single `batch_alter_table`
+block for full SQLite compatibility (SQLite does not support `ALTER COLUMN` or
+inline FK additions). Railway/PostgreSQL runs the same code path cleanly.
+
+### Modified files
+| File | Key changes |
+|---|---|
+| `models.py` | New `GearProfile` class + `CAMERA_TYPES` constant; `StaffUser.gear_profiles` relationship added; `Trip` updated with new columns, FK, and `duration_days` property |
+| `schemas.py` | New `GearProfileCreate` + `GearProfileUpdate` with `camera_type` enum validation and JSON array coercion for `lenses`/`has_filters`. `GenerateRequest` accepts `start_date`/`end_date` or `duration` (model validator resolves and validates both forms, enforces ≤14 days, rejects reversed date ranges). `TripCreate`/`TripUpdate` updated with `gear_profile_id` and date fields. Import of `date` from `datetime` added. |
+| `migrations/versions/dcc6439ee150_phase2_gear_profile_and_trip_dates.py` | New Alembic migration (see above) |
+
+### Migration notes
+- Run `alembic upgrade head` locally after pulling this change.
+- Railway release phase runs `alembic upgrade head` automatically on deploy — no manual action needed in production.
+- Existing trip records retain their `duration` value; `start_date`/`end_date` default to NULL.
+- No frontend changes in this phase — form still submits `duration` as integer; date picker UI is Phase 4.
+
+---
+
 ## [Phase 7] Security hardening — 2026-03-05
 
 ### What changed

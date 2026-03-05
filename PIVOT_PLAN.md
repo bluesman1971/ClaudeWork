@@ -35,15 +35,15 @@ The photography pivot removes the restaurant and attraction scouts entirely and 
 
 ---
 
-## Phase 2 — Database Schema Pivot
-*Required before Phase 3. Estimated: 1–2 days.*
+## Phase 2 — Database Schema Pivot ✅ Complete
+*Completed 2026-03-05.*
 
 | # | Task | File(s) | Status |
 |---|------|---------|--------|
-| 2.1 | Add `GearProfile` model to `models.py` with fields: `camera_type` (enum), `lenses` (JSON array of focal length strings), `has_tripod` (bool), `has_filters` (JSON array: ND, polarizer, etc.), `has_gimbal` (bool) | `models.py` | `[ ]` |
-| 2.2 | Update `Trip` model — replace `duration` int with `start_date` and `end_date` (`Date` fields). Keep `duration` as a computed property for any backward compat. | `models.py` | `[ ]` |
-| 2.3 | Write Alembic migration for GearProfile table and Trip date fields | `migrations/` | `[ ]` |
-| 2.4 | Update `schemas.py` — add `GearProfileSchema`, update `GenerateRequest` to accept `start_date`, `end_date`, and optional `gear_profile_id` | `schemas.py` | `[ ]` |
+| 2.1 | Add `GearProfile` model to `models.py` with fields: `camera_type` (enum), `lenses` (JSON array of focal length strings), `has_tripod` (bool), `has_filters` (JSON array: ND, polarizer, etc.), `has_gimbal` (bool) | `models.py` | `[x]` |
+| 2.2 | Update `Trip` model — `duration` kept as nullable column for backward compat; `start_date`/`end_date` added as `Date` fields; `duration_days` property returns authoritative value from dates when set, falls back to stored integer. Added `gear_profile_id` FK. | `models.py` | `[x]` |
+| 2.3 | Alembic migration `dcc6439ee150` — creates `gear_profiles` table, adds `trips.start_date`, `trips.end_date`, `trips.gear_profile_id`, makes `trips.duration` nullable. Uses `batch_alter_table` for full SQLite compat. | `migrations/versions/dcc6439ee150_*.py` | `[x]` |
+| 2.4 | Added `GearProfileCreate` and `GearProfileUpdate` schemas. `GenerateRequest` and `TripCreate`/`TripUpdate` updated with `start_date`, `end_date`, `gear_profile_id`. Model validator resolves duration from dates or integer; validates date ordering and 14-day max. | `schemas.py` | `[x]` |
 
 **GearProfile field reference:**
 ```python
@@ -149,6 +149,7 @@ def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
 |------|----------------|------------|
 | 2026-03-05 | Plan created. Security + photography pivot architecture finalized. | Start Phase 1 (CORS, pin deps) |
 | 2026-03-05 | Phase 1 complete. CORS split dev/prod, `anthropic` pinned to `==0.80.0`, PII removed from login log, CSP header added to security middleware. `unsafe-inline` retained in `script-src` due to inline onclick handlers — flagged as TODO for Phase 4. | Start Phase 2 (DB schema: GearProfile model + Trip date fields) |
+| 2026-03-05 | Phase 2 complete. `GearProfile` model + migration added. `Trip` model updated with `start_date`/`end_date`/`gear_profile_id`. `duration` made nullable (backward compat via `duration_days` property). `GearProfileCreate`/`Update` schemas added. `GenerateRequest` updated with date/gear fields + model validator. Migration uses `batch_alter_table` throughout for SQLite compat. | Start Phase 3 (backend pivot: remove restaurant/attraction scouts, add ephemeris engine, rewrite photo scout) |
 
 ---
 

@@ -10,9 +10,12 @@ preserve the response shape the frontend expects.
 """
 
 import re
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from models import CAMERA_TYPES
 
 
 # ── Shared validator helpers ──────────────────────────────────────────────────
@@ -47,25 +50,121 @@ class LoginRequest(BaseModel):
         return str(v).strip().lower()
 
 
+# ── Gear Profile ──────────────────────────────────────────────────────────────
+
+class GearProfileCreate(BaseModel):
+    """Create a new gear profile for the authenticated staff user."""
+    name:        str            = Field(..., min_length=1, max_length=100,
+                                        description="Profile label, e.g. 'Travel Kit'")
+    camera_type: str            = Field(..., description=f"One of: {', '.join(CAMERA_TYPES)}")
+    lenses:      list[str]      = Field(default_factory=list,
+                                        description="Focal lengths, e.g. ['16-35mm f/2.8', '50mm f/1.8']")
+    has_tripod:  bool           = False
+    has_filters: list[str]      = Field(default_factory=list,
+                                        description="Filter types, e.g. ['6-stop ND', 'polarizer']")
+    has_gimbal:  bool           = False
+    notes:       str | None     = Field(default=None, max_length=500)
+
+    @field_validator('camera_type')
+    @classmethod
+    def validate_camera_type(cls, v: str) -> str:
+        if v not in CAMERA_TYPES:
+            raise ValueError(f"camera_type must be one of: {', '.join(CAMERA_TYPES)}")
+        return v
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def collapse_name(cls, v: str | None) -> str | None:
+        return _collapse(v)
+
+    @field_validator('notes', mode='before')
+    @classmethod
+    def strip_notes(cls, v: str | None) -> str | None:
+        return _strip_only(v)
+
+    @field_validator('lenses', 'has_filters', mode='before')
+    @classmethod
+    def coerce_to_list(cls, v) -> list:
+        """Accept a JSON array string or a Python list."""
+        if isinstance(v, str):
+            import json
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else [v]
+            except (json.JSONDecodeError, TypeError):
+                return [v] if v.strip() else []
+        return v if v is not None else []
+
+
+class GearProfileUpdate(BaseModel):
+    """All fields optional — supports partial update semantics."""
+    name:        str | None     = Field(default=None, min_length=1, max_length=100)
+    camera_type: str | None     = None
+    lenses:      list[str] | None = None
+    has_tripod:  bool | None    = None
+    has_filters: list[str] | None = None
+    has_gimbal:  bool | None    = None
+    notes:       str | None     = Field(default=None, max_length=500)
+
+    @field_validator('camera_type')
+    @classmethod
+    def validate_camera_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in CAMERA_TYPES:
+            raise ValueError(f"camera_type must be one of: {', '.join(CAMERA_TYPES)}")
+        return v
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def collapse_name(cls, v: str | None) -> str | None:
+        return _collapse(v)
+
+    @field_validator('notes', mode='before')
+    @classmethod
+    def strip_notes(cls, v: str | None) -> str | None:
+        return _strip_only(v)
+
+    @field_validator('lenses', 'has_filters', mode='before')
+    @classmethod
+    def coerce_to_list(cls, v) -> list | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            import json
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else [v]
+            except (json.JSONDecodeError, TypeError):
+                return [v] if v.strip() else []
+        return v
+
+
 # ── Trip generation ───────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
-    location:             str       = Field(..., min_length=1, max_length=100)
-    duration:             int       = Field(..., ge=1, le=14)
-    budget:               str       = Field(default='Moderate', max_length=150)
-    distance:             str       = Field(default='Up to 30 minutes', max_length=150)
-    include_photos:       bool      = True
-    include_dining:       bool      = True
-    include_attractions:  bool      = True
-    photos_per_day:       int       = Field(default=3, ge=1, le=10)
-    restaurants_per_day:  int       = Field(default=3, ge=1, le=8)
-    attractions_per_day:  int       = Field(default=4, ge=1, le=10)
-    photo_interests:      str | None = Field(default=None, max_length=500)
-    cuisines:             str | None = Field(default=None, max_length=500)
-    attraction_cats:      str | None = Field(default=None, max_length=500)
-    accommodation:        str | None = Field(default=None, max_length=150)
-    pre_planned:          str | None = Field(default=None, max_length=500)
-    client_id:            int | None = None
+    location:             str            = Field(..., min_length=1, max_length=100)
+
+    # Duration: supply either an integer number of days OR start_date + end_date.
+    # The model_validator below enforces that exactly one form is present and
+    # populates `duration` from dates when dates are provided.
+    duration:             int | None     = Field(default=None, ge=1, le=14)
+    start_date:           date | None    = None
+    end_date:             date | None    = None
+
+    budget:               str            = Field(default='Moderate', max_length=150)
+    distance:             str            = Field(default='Up to 30 minutes', max_length=150)
+    include_photos:       bool           = True
+    include_dining:       bool           = True
+    include_attractions:  bool           = True
+    photos_per_day:       int            = Field(default=3, ge=1, le=10)
+    restaurants_per_day:  int            = Field(default=3, ge=1, le=8)
+    attractions_per_day:  int            = Field(default=4, ge=1, le=10)
+    photo_interests:      str | None     = Field(default=None, max_length=500)
+    cuisines:             str | None     = Field(default=None, max_length=500)
+    attraction_cats:      str | None     = Field(default=None, max_length=500)
+    accommodation:        str | None     = Field(default=None, max_length=150)
+    pre_planned:          str | None     = Field(default=None, max_length=500)
+    client_id:            int | None     = None
+    gear_profile_id:      int | None     = None
 
     @field_validator('location', 'budget', 'distance', 'accommodation', mode='before')
     @classmethod
@@ -81,6 +180,26 @@ class GenerateRequest(BaseModel):
     @classmethod
     def strip_interests(cls, v: str | None) -> str | None:
         return _strip_only(v)
+
+    @model_validator(mode='after')
+    def resolve_duration(self) -> 'GenerateRequest':
+        """Ensure a usable duration is present, derived from dates if provided."""
+        has_dates = self.start_date is not None and self.end_date is not None
+        has_duration = self.duration is not None
+
+        if has_dates:
+            if self.end_date < self.start_date:
+                raise ValueError('end_date must be on or after start_date')
+            computed = (self.end_date - self.start_date).days + 1
+            if computed > 14:
+                raise ValueError('Trip duration derived from dates cannot exceed 14 days')
+            # Dates take precedence; overwrite any supplied duration
+            self.duration = computed
+        elif not has_duration:
+            raise ValueError(
+                'Provide either duration (integer days) or both start_date and end_date'
+            )
+        return self
 
     @model_validator(mode='after')
     def at_least_one_section(self) -> 'GenerateRequest':
@@ -163,27 +282,30 @@ class ClientUpdate(BaseModel):
 # ── Trips ─────────────────────────────────────────────────────────────────────
 
 class TripCreate(BaseModel):
-    client_id:            int | None = None
-    session_id:           str | None = None
-    title:                str | None = Field(default=None, max_length=255)
-    location:             str        = Field(..., min_length=1, max_length=255)
-    duration:             int        = Field(..., ge=1)
-    budget:               str | None = Field(default=None, max_length=50)
-    distance:             str | None = Field(default=None, max_length=50)
-    include_photos:       bool       = True
-    include_dining:       bool       = True
-    include_attractions:  bool       = True
-    photos_per_day:       int        = Field(default=3, ge=1)
-    restaurants_per_day:  int        = Field(default=3, ge=1)
-    attractions_per_day:  int        = Field(default=4, ge=1)
-    photo_interests:      str | None = Field(default=None, max_length=500)
-    cuisines:             str | None = Field(default=None, max_length=500)
-    attraction_cats:      str | None = Field(default=None, max_length=500)
-    accommodation:        str | None = Field(default=None, max_length=500)
-    raw_photos:           list       = Field(default_factory=list)
-    raw_restaurants:      list       = Field(default_factory=list)
-    raw_attractions:      list       = Field(default_factory=list)
-    colors:               dict       = Field(default_factory=dict)
+    client_id:            int | None  = None
+    gear_profile_id:      int | None  = None
+    session_id:           str | None  = None
+    title:                str | None  = Field(default=None, max_length=255)
+    location:             str         = Field(..., min_length=1, max_length=255)
+    duration:             int | None  = Field(default=None, ge=1)
+    start_date:           date | None = None
+    end_date:             date | None = None
+    budget:               str | None  = Field(default=None, max_length=50)
+    distance:             str | None  = Field(default=None, max_length=50)
+    include_photos:       bool        = True
+    include_dining:       bool        = True
+    include_attractions:  bool        = True
+    photos_per_day:       int         = Field(default=3, ge=1)
+    restaurants_per_day:  int         = Field(default=3, ge=1)
+    attractions_per_day:  int         = Field(default=4, ge=1)
+    photo_interests:      str | None  = Field(default=None, max_length=500)
+    cuisines:             str | None  = Field(default=None, max_length=500)
+    attraction_cats:      str | None  = Field(default=None, max_length=500)
+    accommodation:        str | None  = Field(default=None, max_length=500)
+    raw_photos:           list        = Field(default_factory=list)
+    raw_restaurants:      list        = Field(default_factory=list)
+    raw_attractions:      list        = Field(default_factory=list)
+    colors:               dict        = Field(default_factory=dict)
 
 
 class TripUpdate(BaseModel):
@@ -191,6 +313,7 @@ class TripUpdate(BaseModel):
     status:                       Literal['draft', 'finalized'] | None = None
     title:                        str | None = Field(default=None, max_length=255)
     client_id:                    int | None = None
+    gear_profile_id:              int | None = None
     approved_photo_indices:       list[int] | None = None
     approved_restaurant_indices:  list[int] | None = None
     approved_attraction_indices:  list[int] | None = None

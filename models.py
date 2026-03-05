@@ -1,20 +1,22 @@
 """
 SQLAlchemy ORM models for Trip Master.
 
-Three models:
-  StaffUser  — internal team accounts (admin creates via CLI, no self-registration)
-  Client     — CRM-style client record; staff run trips on behalf of clients
-  Trip       — stores form params + raw suggestions so trips can be reloaded/revised
+Four models:
+  StaffUser    — internal team accounts (admin creates via CLI, no self-registration)
+  Client       — CRM-style client record; staff run trips on behalf of clients
+  GearProfile  — photographer's gear vault (camera body, lenses, accessories)
+  Trip         — stores form params + raw suggestions so trips can be reloaded/revised
 
 Default database: SQLite (trip_master.db).
 Production: set DATABASE_URL env var to a PostgreSQL connection string and the
 app will use that instead — no code changes required.
 """
 
-from datetime import datetime, timezone
+import json as _json
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer, String, Text,
+    Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -50,6 +52,8 @@ class StaffUser(db):
                                    backref='created_by', lazy='dynamic')
     trips_created   = relationship('Trip',   foreign_keys='Trip.created_by_id',
                                    backref='created_by', lazy='dynamic')
+    gear_profiles   = relationship('GearProfile', back_populates='staff_user',
+                                   lazy='dynamic', cascade='all, delete-orphan')
 
     def to_dict(self):
         return {
@@ -124,6 +128,79 @@ class Client(db):
 
 
 # ---------------------------------------------------------------------------
+# GearProfile
+# ---------------------------------------------------------------------------
+
+# Valid camera type values — stored as strings for DB portability.
+CAMERA_TYPES = (
+    'full_frame_mirrorless',
+    'apsc_mirrorless',
+    'apsc_dslr',
+    'full_frame_dslr',
+    'smartphone',
+    'film_35mm',
+    'film_medium_format',
+)
+
+
+class GearProfile(db):
+    """A photographer's gear vault linked to a staff user account.
+
+    A staff user may have multiple named profiles (e.g. "Travel Kit",
+    "Full Studio") so the most appropriate one can be selected per shoot.
+
+    lenses and has_filters are stored as JSON text arrays for DB portability
+    (SQLite has no native array type; PostgreSQL would also work fine with
+    this approach via the Text column).
+    """
+    __tablename__ = 'gear_profiles'
+
+    id            = Column(Integer, primary_key=True)
+    staff_user_id = Column(Integer, ForeignKey('staff_users.id'),
+                           nullable=False, index=True)
+    name          = Column(String(100), nullable=False)  # e.g. "Travel Kit"
+
+    # Camera body
+    camera_type   = Column(String(50), nullable=False)   # see CAMERA_TYPES above
+
+    # Lenses: JSON array of focal-length strings, e.g. ["16-35mm f/2.8", "50mm f/1.8"]
+    lenses        = Column(Text, nullable=True)
+
+    # Accessories
+    has_tripod    = Column(Boolean, nullable=False, default=False)
+    # Filters: JSON array, e.g. ["6-stop ND", "polarizer", "graduated ND"]
+    has_filters   = Column(Text, nullable=True)
+    has_gimbal    = Column(Boolean, nullable=False, default=False)  # phone/video stabilizer
+
+    notes         = Column(Text, nullable=True)  # free-text notes about the kit
+    created_at    = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at    = Column(DateTime, nullable=False, default=_utcnow,
+                           onupdate=_utcnow)
+
+    # Relationships
+    staff_user = relationship('StaffUser', back_populates='gear_profiles')
+    trips      = relationship('Trip', back_populates='gear_profile')
+
+    def to_dict(self):
+        return {
+            'id':            self.id,
+            'staff_user_id': self.staff_user_id,
+            'name':          self.name,
+            'camera_type':   self.camera_type,
+            'lenses':        _json.loads(self.lenses)      if self.lenses      else [],
+            'has_tripod':    self.has_tripod,
+            'has_filters':   _json.loads(self.has_filters) if self.has_filters else [],
+            'has_gimbal':    self.has_gimbal,
+            'notes':         self.notes,
+            'created_at':    self.created_at.isoformat() if self.created_at else None,
+            'updated_at':    self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def __repr__(self):
+        return f'<GearProfile #{self.id} {self.name!r} user={self.staff_user_id}>'
+
+
+# ---------------------------------------------------------------------------
 # Trip
 # ---------------------------------------------------------------------------
 
@@ -133,6 +210,8 @@ class Trip(db):
     id            = Column(Integer, primary_key=True)
     client_id     = Column(Integer, ForeignKey('clients.id'), nullable=True, index=True)
     created_by_id = Column(Integer, ForeignKey('staff_users.id'), nullable=True)
+    gear_profile_id = Column(Integer, ForeignKey('gear_profiles.id'), nullable=True,
+                             index=True)
 
     title      = Column(String(255), nullable=True)   # auto-generated if blank
     status     = Column(String(20),  nullable=False, default='draft')  # 'draft' | 'finalized'
@@ -142,7 +221,13 @@ class Trip(db):
 
     # ── Form parameters ──────────────────────────────────────────────────────
     location            = Column(String(255), nullable=False)
-    duration            = Column(Integer,     nullable=False)
+
+    # Duration can be supplied directly (legacy) or derived from start/end dates.
+    # duration_days property (below) returns the authoritative value.
+    duration            = Column(Integer,     nullable=True)   # nullable: new trips use dates
+    start_date          = Column(Date,        nullable=True)   # exact shoot start date
+    end_date            = Column(Date,        nullable=True)   # exact shoot end date
+
     budget              = Column(String(50),  nullable=True)
     distance            = Column(String(50),  nullable=True)
     include_photos      = Column(Boolean,     default=True)
@@ -173,12 +258,28 @@ class Trip(db):
     # ── Session linkage ───────────────────────────────────────────────────────
     session_id = Column(String(36), nullable=True, index=True)  # UUID from /generate
 
+    # Relationships
+    gear_profile = relationship('GearProfile', back_populates='trips')
+
+    @property
+    def duration_days(self) -> int | None:
+        """Authoritative trip duration in days.
+
+        Returns the number of days derived from start/end dates when both are
+        set (inclusive of both endpoints), otherwise falls back to the legacy
+        `duration` integer column. Returns None if neither is available.
+        """
+        if self.start_date and self.end_date:
+            delta = self.end_date - self.start_date
+            return delta.days + 1   # inclusive: 5-Mar to 7-Mar = 3 days
+        return self.duration
+
     def to_dict(self, include_html=False):
-        import json as _json
         d = {
             'id':           self.id,
             'client_id':    self.client_id,
             'created_by_id': self.created_by_id,
+            'gear_profile_id': self.gear_profile_id,
             'title':        self.title,
             'status':       self.status,
             'is_deleted':   self.is_deleted,
@@ -186,7 +287,9 @@ class Trip(db):
             'updated_at':   self.updated_at.isoformat() if self.updated_at else None,
             # form params
             'location':             self.location,
-            'duration':             self.duration,
+            'duration':             self.duration_days,   # always use computed value
+            'start_date':           self.start_date.isoformat() if self.start_date else None,
+            'end_date':             self.end_date.isoformat()   if self.end_date   else None,
             'budget':               self.budget,
             'distance':             self.distance,
             'include_photos':       self.include_photos,
