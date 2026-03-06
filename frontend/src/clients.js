@@ -57,16 +57,14 @@ export async function saveNewClient(e) {
         const res = await apiFetch('/clients', {
             method: 'POST',
             body: JSON.stringify({
-                name:                 document.getElementById('cName').value.trim(),
-                email:                document.getElementById('cEmail').value.trim(),
-                phone:                document.getElementById('cPhone').value.trim(),
-                company:              document.getElementById('cCompany').value.trim(),
-                home_city:            document.getElementById('cHomeCity').value.trim(),
-                preferred_budget:     document.getElementById('cBudget').value,
-                travel_style:         document.getElementById('cTravelStyle').value.trim(),
-                dietary_requirements: document.getElementById('cDietary').value.trim(),
-                notes:                document.getElementById('cNotes').value.trim(),
-                tags:                 document.getElementById('cTags').value.trim(),
+                name:         document.getElementById('cName').value.trim(),
+                email:        document.getElementById('cEmail').value.trim(),
+                phone:        document.getElementById('cPhone').value.trim(),
+                company:      document.getElementById('cCompany').value.trim(),
+                home_city:    document.getElementById('cHomeCity').value.trim(),
+                travel_style: document.getElementById('cTravelStyle').value.trim(),
+                notes:        document.getElementById('cNotes').value.trim(),
+                tags:         document.getElementById('cTags').value.trim(),
             }),
         });
         const data = await res.json();
@@ -156,7 +154,11 @@ export function openGearProfileModal(profileId) {
         if (gp) {
             document.getElementById('gpName').value        = gp.name;
             document.getElementById('gpCameraType').value  = gp.camera_type;
-            document.getElementById('gpLenses').value      = (gp.lenses || []).join('\n');
+            // Lenses: check the boxes that match saved category names
+            const savedLenses = new Set(gp.lenses || []);
+            document.querySelectorAll('input[name="gpLens"]').forEach(cb => {
+                cb.checked = savedLenses.has(cb.value);
+            });
             document.getElementById('gpHasTripod').checked = gp.has_tripod;
             document.getElementById('gpHasGimbal').checked = gp.has_gimbal;
             document.getElementById('gpFilters').value     = (gp.has_filters || []).join('\n');
@@ -182,15 +184,19 @@ export async function saveGearProfile(e) {
     btn.disabled = true;
     btn.textContent = 'Saving…';
 
-    // Parse lenses / filters: one per line, trim empties
+    // Parse filters: one per line, trim empties
     const parseLines = id =>
         document.getElementById(id).value
             .split('\n').map(s => s.trim()).filter(Boolean);
 
+    // Lenses: read checked category checkboxes
+    const selectedLenses = [...document.querySelectorAll('input[name="gpLens"]:checked')]
+        .map(cb => cb.value);
+
     const body = {
         name:        document.getElementById('gpName').value.trim(),
         camera_type: document.getElementById('gpCameraType').value,
-        lenses:      parseLines('gpLenses'),
+        lenses:      selectedLenses,
         has_tripod:  document.getElementById('gpHasTripod').checked,
         has_gimbal:  document.getElementById('gpHasGimbal').checked,
         has_filters: parseLines('gpFilters'),

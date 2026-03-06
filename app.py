@@ -722,10 +722,10 @@ async def call_photo_scout(
 
     # ── Build prompt blocks ────────────────────────────────────────────────
     accommodation_block = (
-        f'- Accommodation / travel base: {accommodation}\n'
-        f'  Distance and logistics must be calculated from this address, not the city centre.\n'
+        f'- Starting point: {accommodation}\n'
+        f'  Calculate all distances and travel times from this starting point.\n'
         if accommodation else
-        '- Accommodation: not specified — use city centre as the assumed travel base.\n'
+        '- Starting point: not specified — use city centre as the assumed travel base.\n'
     )
     pre_planned_block = (
         f'Already planned / committed:\n  {pre_planned}\n'
@@ -737,8 +737,6 @@ async def call_photo_scout(
     profile_lines = []
     if profile.get('travel_style'):
         profile_lines.append(f"  Travel style: {profile['travel_style']}")
-    if profile.get('preferred_budget'):
-        profile_lines.append(f"  Budget tier: {profile['preferred_budget']}")
     if profile.get('home_city'):
         profile_lines.append(
             f"  Home city: {profile['home_city']} — avoid locations similar to home; surprise them."
@@ -1514,6 +1512,26 @@ def generate_master_html(location, duration, photos, restaurants=None, attractio
             margin-bottom: 5px;
         }}
 
+        /* Multi-shot blocks within a photo card */
+        .shot-block {{
+            border-top: 1px solid #e8e2d9;
+            padding-top: 16px;
+            margin-top: 16px;
+        }}
+        .shot-block:first-child {{
+            border-top: none;
+            padding-top: 0;
+            margin-top: 0;
+        }}
+        .shot-number {{
+            font-weight: 600;
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--primary);
+            margin-bottom: 10px;
+        }}
+
         /* Tip highlight box */
         .tip-box {{
             background: var(--sand);
@@ -1825,6 +1843,36 @@ def generate_master_html(location, duration, photos, restaurants=None, attractio
                     f'{gear_badges}</div></div>'
                 ) if gear_badges else ''
 
+                # ── Multi-shot or single-shot content ─────────────────────
+                shots = photo.get('shots')
+                if shots and isinstance(shots, list):
+                    # New multi-shot format: 'shots' array per location
+                    shots_html = ''
+                    for shot_i, shot in enumerate(shots, 1):
+                        shots_html += (
+                            f'<div class="shot-block">'
+                            f'<div class="shot-number">Shot {shot_i}'
+                            + (f' — {_e(shot.get("title", ""))}' if shot.get('title') else '')
+                            + f'</div>'
+                            f'<div class="full-field"><span class="meta-label">The Shot</span>'
+                            f'{_e(shot.get("the_shot"))}</div>'
+                            f'<div class="full-field"><span class="meta-label">The Setup</span>'
+                            f'{_e(shot.get("the_setup"))}</div>'
+                            f'<div class="full-field"><span class="meta-label">The Settings</span>'
+                            f'{_e(shot.get("the_settings"))}</div>'
+                            f'</div>'
+                        )
+                else:
+                    # Backward compat: old single-shot flat structure
+                    shots_html = (
+                        f'<div class="full-field"><span class="meta-label">The Shot</span>'
+                        f'{_e(photo.get("the_shot"))}</div>'
+                        f'<div class="full-field"><span class="meta-label">The Setup</span>'
+                        f'{_e(photo.get("the_setup"))}</div>'
+                        f'<div class="full-field"><span class="meta-label">The Settings</span>'
+                        f'{_e(photo.get("the_settings"))}</div>'
+                    )
+
                 html += f"""
         <div class="item-card">
             <div class="item-card-head">
@@ -1835,18 +1883,7 @@ def generate_master_html(location, duration, photos, restaurants=None, attractio
                 </div>
             </div>
             <div class="item-card-body">
-                <div class="full-field">
-                    <span class="meta-label">The Shot</span>
-                    {_e(photo.get('the_shot'))}
-                </div>
-                <div class="full-field">
-                    <span class="meta-label">The Setup</span>
-                    {_e(photo.get('the_setup'))}
-                </div>
-                <div class="full-field">
-                    <span class="meta-label">The Settings</span>
-                    {_e(photo.get('the_settings'))}
-                </div>
+                {shots_html}
                 <div class="tip-box">
                     <span class="meta-label">The Reality Check</span>
                     {_e(photo.get('the_reality_check'))}
@@ -2481,11 +2518,9 @@ async def replace_item(
                 db_client = await run_in_threadpool(lambda: db_session.get(Client, db_trip.client_id))
                 if db_client and not db_client.is_deleted:
                     client_profile = {k: v for k, v in {
-                        'home_city':            db_client.home_city            or '',
-                        'preferred_budget':     db_client.preferred_budget     or '',
-                        'travel_style':         db_client.travel_style         or '',
-                        'dietary_requirements': db_client.dietary_requirements or '',
-                        'notes':                db_client.notes                or '',
+                        'home_city':    db_client.home_city    or '',
+                        'travel_style': db_client.travel_style or '',
+                        'notes':        db_client.notes        or '',
                     }.items() if v}
             except Exception as cp_exc:
                 logger.warning('Replace: could not load client profile: %s', cp_exc)

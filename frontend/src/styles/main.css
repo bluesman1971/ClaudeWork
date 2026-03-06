@@ -1465,6 +1465,51 @@
             color: var(--ink);
         }
 
+        /* Multi-shot blocks within a review card */
+        .kelby-shot-block {
+            border-top: 1px solid var(--sand);
+            padding-top: 12px;
+            margin-top: 12px;
+        }
+        .kelby-shot-block:first-child {
+            border-top: none;
+            padding-top: 0;
+            margin-top: 0;
+        }
+        .kelby-shot-title {
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--primary);
+            margin-bottom: 6px;
+        }
+
+        /* Lens category checkboxes in gear profile modal */
+        .lens-categories {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+        .lens-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 9px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            line-height: 1.35;
+        }
+        .lens-option input[type="checkbox"] {
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+        .lens-option em {
+            font-style: normal;
+            color: var(--ink-2);
+            font-size: 0.775rem;
+            margin-left: 4px;
+        }
+
         /* Google Earth button (inline link styled as button) */
         .review-earth-btn {
             display: inline-flex;

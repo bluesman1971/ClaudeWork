@@ -31,7 +31,7 @@ from tests.conftest import TestingSessionLocal
 VALID_PROFILE = {
     "name": "Travel Kit",
     "camera_type": "apsc_mirrorless",
-    "lenses": ["16-35mm f/2.8", "50mm f/1.8"],
+    "lenses": ["Ultra-Wide Angle", "Telephoto Zoom"],   # lens category names (not focal lengths)
     "has_tripod": True,
     "has_filters": ["polarizer"],
     "has_gimbal": False,
@@ -68,7 +68,7 @@ async def test_create_gear_profile(auth_client):
     assert gp["name"] == "Travel Kit"
     assert gp["camera_type"] == "apsc_mirrorless"
     assert isinstance(gp["id"], int)
-    assert "16-35mm f/2.8" in gp["lenses"]
+    assert "Ultra-Wide Angle" in gp["lenses"]
     assert gp["has_tripod"] is True
 
 

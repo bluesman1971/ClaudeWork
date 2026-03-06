@@ -60,25 +60,9 @@
                         <input type="text" id="cHomeCity" placeholder="New York, NY">
                     </div>
                 </div>
-                <div class="modal-row">
-                    <div class="modal-field">
-                        <label>Budget Preference</label>
-                        <select id="cBudget">
-                            <option value="">Unspecified</option>
-                            <option value="budget">Budget</option>
-                            <option value="moderate">Moderate</option>
-                            <option value="upscale">Upscale</option>
-                            <option value="luxury">Luxury</option>
-                        </select>
-                    </div>
-                    <div class="modal-field">
-                        <label>Travel Style</label>
-                        <input type="text" id="cTravelStyle" placeholder="e.g., Adventure, Cultural">
-                    </div>
-                </div>
                 <div class="modal-field">
-                    <label>Dietary Requirements</label>
-                    <input type="text" id="cDietary" placeholder="e.g., Vegetarian, nut allergy, no shellfish, halal">
+                    <label>Travel Style</label>
+                    <input type="text" id="cTravelStyle" placeholder="e.g., Adventure, Cultural, Urban Explorer">
                 </div>
                 <div class="modal-field">
                     <label>Notes</label>
@@ -124,8 +108,33 @@
                 </div>
                 <div class="modal-row">
                     <div class="modal-field">
-                        <label>Lenses <span class="modal-hint">one per line, e.g. 16-35mm f/2.8</span></label>
-                        <textarea id="gpLenses" rows="4" placeholder="16-35mm f/2.8&#10;50mm f/1.8&#10;70-200mm f/4"></textarea>
+                        <label>Lenses</label>
+                        <div class="lens-categories">
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="Ultra-Wide Angle">
+                                <span>Ultra-Wide Angle <em>10–20mm · landscapes, architecture, interiors</em></span>
+                            </label>
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="Wide to Standard">
+                                <span>Wide to Standard <em>24–70mm · street, events, groups</em></span>
+                            </label>
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="All-in-One Zoom">
+                                <span>All-in-One Zoom <em>24–200mm+ · walk-around travel</em></span>
+                            </label>
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="Telephoto Zoom">
+                                <span>Telephoto Zoom <em>70–200mm · portraits, weddings</em></span>
+                            </label>
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="Super Telephoto">
+                                <span>Super Telephoto <em>200–600mm+ · wildlife, birds</em></span>
+                            </label>
+                            <label class="lens-option">
+                                <input type="checkbox" name="gpLens" value="Macro / Close-up">
+                                <span>Macro / Close-up <em>any focal length · insects, flowers, fine detail</em></span>
+                            </label>
+                        </div>
                     </div>
                     <div class="modal-field">
                         <label>Filters <span class="modal-hint">one per line, e.g. 6-stop ND</span></label>
@@ -285,8 +294,8 @@
 
             <div class="field-row">
                 <div class="field" style="grid-column: 1 / -1;">
-                    <label for="accommodation">Accommodation Address <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — improves distance &amp; logistics advice)</span></label>
-                    <input type="text" id="accommodation" placeholder="e.g., Hotel Arts, Carrer de la Marina 19-21, Barcelona">
+                    <label for="accommodation">Starting Point <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — improves distance &amp; logistics advice)</span></label>
+                    <input type="text" id="accommodation" placeholder="Hotel, address, neighbourhood, etc.">
                 </div>
             </div>
 
@@ -329,25 +338,15 @@
                 </div>
             </div>
 
-            <!-- Budget + Distance -->
+            <!-- Travel Radius -->
             <div class="field-row">
-                <div class="field">
-                    <label for="budget">Budget Range</label>
-                    <select id="budget" required>
-                        <option value="">Select...</option>
-                        <option value="Budget-Conscious">Budget-Conscious</option>
-                        <option value="Moderate" selected>Moderate</option>
-                        <option value="Upscale">Upscale</option>
-                        <option value="Flexible">Flexible</option>
-                    </select>
-                </div>
                 <div class="field">
                     <label for="distance">Travel Radius</label>
                     <select id="distance" required>
                         <option value="">Select...</option>
                         <option value="City Center Only">City Center Only</option>
-                        <option value="Up to 15 minutes" selected>Up to 15 minutes</option>
-                        <option value="Up to 30 minutes">Up to 30 minutes</option>
+                        <option value="15 min from starting point" selected>15 min from starting point</option>
+                        <option value="30 min from starting point">30 min from starting point</option>
                         <option value="Flexible">Flexible</option>
                     </select>
                 </div>

@@ -118,21 +118,34 @@ export function buildReviewItem(type, item, idx) {
         }</div>`;
     }
 
-    // ── Kelby 4-section content ────────────────────────────────────────────────
-    const sections = [
-        { label: 'The Shot',          key: 'the_shot'          },
-        { label: 'The Setup',         key: 'the_setup'         },
-        { label: 'The Settings',      key: 'the_settings'      },
-        { label: 'The Reality Check', key: 'the_reality_check' },
-    ];
-    const kelbySections = sections.map(s =>
-        item[s.key]
-            ? `<div class="kelby-section">
-                   <span class="kelby-label">${s.label}</span>
-                   <p class="kelby-text">${esc(item[s.key])}</p>
-               </div>`
-            : ''
-    ).join('');
+    // ── Shot content: multi-shot array or single-shot fallback ────────────────
+    let shotsSections = '';
+    if (Array.isArray(item.shots) && item.shots.length) {
+        // New multi-shot format: shots array per location
+        shotsSections = item.shots.map((shot, i) => `
+            <div class="kelby-shot-block">
+                <div class="kelby-shot-title">Shot ${i + 1}${shot.title ? ' \u2014 ' + esc(shot.title) : ''}</div>
+                ${shot.the_shot     ? `<div class="kelby-section"><span class="kelby-label">The Shot</span><p class="kelby-text">${esc(shot.the_shot)}</p></div>` : ''}
+                ${shot.the_setup    ? `<div class="kelby-section"><span class="kelby-label">The Setup</span><p class="kelby-text">${esc(shot.the_setup)}</p></div>` : ''}
+                ${shot.the_settings ? `<div class="kelby-section"><span class="kelby-label">The Settings</span><p class="kelby-text">${esc(shot.the_settings)}</p></div>` : ''}
+            </div>`).join('');
+    } else {
+        // Backward compat: old single-shot flat structure
+        shotsSections = [
+            { label: 'The Shot',     key: 'the_shot'     },
+            { label: 'The Setup',    key: 'the_setup'     },
+            { label: 'The Settings', key: 'the_settings'  },
+        ].map(s => item[s.key]
+            ? `<div class="kelby-section"><span class="kelby-label">${s.label}</span><p class="kelby-text">${esc(item[s.key])}</p></div>`
+            : '').join('');
+    }
+
+    // Reality Check is always at location level (shared across shots)
+    const realityCheck = item.the_reality_check
+        ? `<div class="kelby-section"><span class="kelby-label">The Reality Check</span><p class="kelby-text">${esc(item.the_reality_check)}</p></div>`
+        : '';
+
+    const kelbySections = shotsSections + realityCheck;
 
     // ── Google Earth button ────────────────────────────────────────────────────
     const earthBtn = item.google_earth_url

@@ -142,6 +142,19 @@ CAMERA_TYPES = (
     'film_medium_format',
 )
 
+# Valid lens category values — broad focal-range buckets shown as checkboxes in
+# the gear profile form.  Stored as a JSON array of these strings in GearProfile.lenses.
+LENS_CATEGORIES = (
+    'Ultra-Wide Angle',   # 10–20mm — landscapes, architecture, tight interiors
+    'Wide to Standard',   # 24–70mm — street photography, events, groups
+    'All-in-One Zoom',    # 24–200mm+ — walk-around travel convenience
+    'Telephoto Zoom',     # 70–200mm — portraits, weddings, medium-distance subjects
+    'Super Telephoto',    # 200–600mm+ — wildlife, birds, field sports
+    'Macro / Close-up',   # any focal length (specialised) — insects, flowers, fine detail
+)
+
+# Update comment on GearProfile.lenses column docstring to reflect category names.
+
 
 class GearProfile(db):
     """A photographer's gear vault linked to a staff user account.
@@ -163,7 +176,7 @@ class GearProfile(db):
     # Camera body
     camera_type   = Column(String(50), nullable=False)   # see CAMERA_TYPES above
 
-    # Lenses: JSON array of focal-length strings, e.g. ["16-35mm f/2.8", "50mm f/1.8"]
+    # Lenses: JSON array of LENS_CATEGORIES values, e.g. ["Ultra-Wide Angle", "Telephoto Zoom"]
     lenses        = Column(Text, nullable=True)
 
     # Accessories

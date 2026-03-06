@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from models import CAMERA_TYPES
+from models import CAMERA_TYPES, LENS_CATEGORIES
 
 
 # ── Shared validator helpers ──────────────────────────────────────────────────
@@ -58,7 +58,7 @@ class GearProfileCreate(BaseModel):
                                         description="Profile label, e.g. 'Travel Kit'")
     camera_type: str            = Field(..., description=f"One of: {', '.join(CAMERA_TYPES)}")
     lenses:      list[str]      = Field(default_factory=list,
-                                        description="Focal lengths, e.g. ['16-35mm f/2.8', '50mm f/1.8']")
+                                        description=f"Lens categories from: {', '.join(LENS_CATEGORIES)}")
     has_tripod:  bool           = False
     has_filters: list[str]      = Field(default_factory=list,
                                         description="Filter types, e.g. ['6-stop ND', 'polarizer']")
@@ -150,7 +150,7 @@ class GenerateRequest(BaseModel):
     start_date:           date | None    = None
     end_date:             date | None    = None
 
-    budget:               str            = Field(default='Moderate', max_length=150)
+    budget:               str | None     = Field(default=None, max_length=150)
     distance:             str            = Field(default='Up to 30 minutes', max_length=150)
     include_photos:       bool           = True
     include_dining:       bool           = True

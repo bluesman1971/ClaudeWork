@@ -15,6 +15,17 @@ Public API:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Focal range hint for each lens category — shown in the gear vault block so
+# Claude understands the actual glass available without exact focal lengths.
+_LENS_RANGES: dict = {
+    'Ultra-Wide Angle': '10–20mm',
+    'Wide to Standard': '24–70mm',
+    'All-in-One Zoom':  '24–200mm+',
+    'Telephoto Zoom':   '70–200mm',
+    'Super Telephoto':  '200–600mm+',
+    'Macro / Close-up': 'macro / close-up',
+}
+
 _CAMERA_LABELS: dict = {
     'full_frame_mirrorless': 'Full-frame mirrorless',
     'apsc_mirrorless':       'APS-C mirrorless',
@@ -50,7 +61,14 @@ def _gear_block(gear_profile: dict | None) -> str:
     lines.append(f'  Camera body: {camera_label}')
 
     lenses = gear_profile.get('lenses') or []
-    lines.append(f'  Lenses:      {", ".join(lenses) if lenses else "unknown"}')
+    if lenses:
+        lens_strs = [
+            f'{l} ({_LENS_RANGES[l]})' if l in _LENS_RANGES else l
+            for l in lenses
+        ]
+        lines.append(f'  Lenses:      {", ".join(lens_strs)}')
+    else:
+        lines.append('  Lenses:      unknown')
 
     accessories = []
     if gear_profile.get('has_tripod'):
@@ -122,44 +140,48 @@ No fluff. No travel-brochure language. Just what the photographer needs to nail 
 
 {gear_section}
 GEAR RULES:
-- The Setup section MUST reference the actual lenses in their vault by focal length.
-  "Use the 16-35mm at 24mm, wide open" — not "use a wide-angle lens".
+- The Setup section MUST reference the lens category and its focal range from the vault.
+  "Use the Wide to Standard (24–70mm) zoom at the wide end" — not just "use a wide lens".
+  If they have Ultra-Wide Angle (10–20mm), call it out specifically for architecture/interiors.
 - {settings_rule}
 - {tripod_rule}
 - Only recommend filters the photographer actually owns.
-- required_gear must list ONLY items from their vault that this specific shot needs.
+- required_gear must list ONLY items from their vault that any shot at this location needs.
+  Use category names (e.g. "Telephoto Zoom", "tripod") — not focal lengths.
   If they don't have a critical item, say so in the_reality_check.
 
-KELBY-STYLE OUTPUT FORMAT — follow this strictly for every location:
+MULTI-SHOT FORMAT — 'shots' array per location:
+Each location gets 2–3 distinct shooting approaches in the 'shots' array.
+Each shot must be a genuinely different creative take:
+  - Different lens category (wide vs telephoto)
+  - Different subject element (full building vs architectural detail)
+  - Different vantage point (ground level vs elevated)
+  - Different light window (sunrise interior vs blue-hour exterior)
+Do NOT paraphrase the same shot. If a shot requires a lens category they don't have, skip it.
+Minimum 1 shot per location, maximum 3.
 
-the_shot:
-  One sharp paragraph. What are you pointing at and why does it work?
-  Lead with the subject — not the location. Not "Nestled in..." — start with the subject.
-  State what time of year and light condition makes this shot work right now.
+STRUCTURE per location:
+shots (array of 2–3):
+  title:         Short label — "Full facade at golden hour" or "Tower detail — telephoto"
+  the_shot:      One sharp paragraph. What are you pointing at and why does it work?
+                 Lead with the subject. State what makes this specific angle compelling.
+  the_setup:     Exact position. Lens category + focal range from vault. Framing technique.
+                 "Stand at the north end. Use the Wide to Standard (24–70mm) at 24mm..."
+  the_settings:  {settings_rule}  One concrete starting point per shot.
 
-the_setup:
-  Exact position (north end, third arch, behind the railing — be specific).
-  Exact focal length from their lens list. Framing technique.
-  "Stand at the north end of the bridge. Use the 16-35mm at 24mm. Fill the frame..."
-
-the_settings:
-  {settings_rule}
-  One concrete starting point. Explain the why if non-obvious.
-
-the_reality_check:
+the_reality_check (shared for all shots at this location):
   Honest logistics. Crowds, sun direction at the actual shoot time, parking,
   access restrictions, permit requirements, seasonal caveats.
   Use the ephemeris data to confirm sun direction and timing.
-  If they're missing critical gear for this shot, flag it here.
+  Flag any gear gaps for any of the shots above.
 
-shoot_window:
+shoot_window (shared):
   A specific time range — e.g. "5:45–7:00 AM (Day 2)".
   Use the actual ephemeris times provided, converted to local destination time.
-  Golden hour = 60 min either side of sunrise/sunset.
-  Blue hour = civil dawn/dusk window.
+  Golden hour = 60 min either side of sunrise/sunset. Blue hour = civil dawn/dusk window.
 
-distance_from_accommodation:
-  Walking or transit time from accommodation. Write "N/A" if none was given.
+distance_from_accommodation (shared):
+  Walking or transit time from starting point. Write "N/A" if none was given.
 
 WRITING RULES:
 - Every sentence must earn its place. Cut filler ruthlessly.
@@ -211,9 +233,10 @@ def build_photo_replace_system_prompt() -> str:
     return (
         'You are a photography location scout. Find ONE real, currently accessible '
         'photography location that has NOT already been suggested for this trip. '
-        'Be specific: name the exact spot, the precise shooting position, and the '
-        'technical setup. Follow the four-section Kelby format '
-        '(the_shot / the_setup / the_settings / the_reality_check).'
+        'Be specific: name the exact spot and include 2–3 distinct shooting approaches '
+        'in the shots array (different lens categories, vantage points, or subject elements). '
+        'Each shot must reference lens categories by name and focal range. '
+        'Shared logistics go in the_reality_check at location level.'
     )
 
 

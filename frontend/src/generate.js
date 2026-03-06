@@ -72,11 +72,10 @@ document.getElementById('tripForm').addEventListener('submit', async (e) => {
             return showError('Please describe your other photography interest, or uncheck "Other"');
     }
 
-    // ── Validate budget + distance ────────────────────────────────────────────
-    const budget   = document.getElementById('budget').value;
+    // ── Validate distance ─────────────────────────────────────────────────────
     const distance = document.getElementById('distance').value;
-    if (!budget || !distance)
-        return showError('Please select a budget and travel radius');
+    if (!distance)
+        return showError('Please select a travel radius');
 
     document.getElementById('submitBtn').disabled = true;
     document.getElementById('loading').classList.add('active');
@@ -89,7 +88,6 @@ document.getElementById('tripForm').addEventListener('submit', async (e) => {
         location,
         start_date: startDateVal,
         end_date:   endDateVal,
-        budget,
         distance,
         accommodation: document.getElementById('accommodation').value.trim(),
         pre_planned:   document.getElementById('prePlanned').value.trim(),

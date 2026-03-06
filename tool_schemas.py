@@ -42,9 +42,10 @@ Usage:
 PHOTO_TOOL: dict = {
     "name": "submit_photo_locations",
     "description": (
-        "Submit photography location recommendations in Kelby-style four-section "
-        "format for the trip guide. Each location includes technical gear-specific "
-        "setup instructions, concrete camera settings, and honest logistics."
+        "Submit photography location recommendations for the trip guide. "
+        "Each location contains 2–3 distinct shooting approaches (the 'shots' array), "
+        "each calibrated to the photographer's gear vault. "
+        "Shared logistics (reality check, shoot window, required gear) are at location level."
     ),
     "input_schema": {
         "type": "object",
@@ -94,42 +95,69 @@ PHOTO_TOOL: dict = {
                             )
                         },
 
-                        "the_shot": {
-                            "type": "string",
+                        "shots": {
+                            "type": "array",
                             "description": (
-                                "One sharp paragraph: what you are pointing at, why it works "
-                                "at this time of year and in this light. Lead with the subject. "
-                                "State what makes the location compelling right now. No filler."
-                            )
-                        },
-
-                        "the_setup": {
-                            "type": "string",
-                            "description": (
-                                "Exact shooting position, exact focal length from the "
-                                "photographer's lens list, framing technique. "
-                                "E.g. 'Stand at the north end of the bridge. Use the 16-35mm "
-                                "at 24mm. Fill the bottom third with the wet cobblestones...'"
-                            )
-                        },
-
-                        "the_settings": {
-                            "type": "string",
-                            "description": (
-                                "Concrete starting-point camera settings calibrated to the "
-                                "photographer's camera type. For digital: ISO / aperture / shutter "
-                                "speed + mode. For film: stock, ASA, metering mode. "
-                                "For smartphone: Pro mode values or specific modes. "
-                                "One set of numbers — not a range."
-                            )
+                                "2–3 distinct shooting approaches for this location. "
+                                "Each must be achievable with the photographer's actual gear vault. "
+                                "Each must be a genuinely different creative take — different lens "
+                                "category, vantage point, subject element, or light condition. "
+                                "Do NOT repeat the same shot with different wording. "
+                                "Minimum 1, maximum 3."
+                            ),
+                            "minItems": 1,
+                            "maxItems": 3,
+                            "items": {
+                                "type": "object",
+                                "required": ["title", "the_shot", "the_setup", "the_settings"],
+                                "properties": {
+                                    "title": {
+                                        "type": "string",
+                                        "description": (
+                                            "Short label for this shooting approach, "
+                                            "e.g. 'Full facade at golden hour' or 'Tower detail — telephoto'."
+                                        )
+                                    },
+                                    "the_shot": {
+                                        "type": "string",
+                                        "description": (
+                                            "One sharp paragraph: what you are pointing at, why it works "
+                                            "at this time of year and in this light. Lead with the subject. "
+                                            "State what makes this specific angle compelling. No filler."
+                                        )
+                                    },
+                                    "the_setup": {
+                                        "type": "string",
+                                        "description": (
+                                            "Exact shooting position, lens category and focal range from the "
+                                            "photographer's vault, framing technique. "
+                                            "E.g. 'Stand at the north end of the bridge. Use the Wide to "
+                                            "Standard (24–70mm) zoom at 24mm. Fill the bottom third with "
+                                            "the wet cobblestones...'"
+                                        )
+                                    },
+                                    "the_settings": {
+                                        "type": "string",
+                                        "description": (
+                                            "Concrete starting-point camera settings calibrated to the "
+                                            "photographer's camera type and this specific shot. "
+                                            "For digital: ISO / aperture / shutter speed + mode. "
+                                            "For film: stock, ASA, metering mode. "
+                                            "For smartphone: Pro mode values or specific modes. "
+                                            "One set of numbers — not a range."
+                                        )
+                                    },
+                                }
+                            }
                         },
 
                         "the_reality_check": {
                             "type": "string",
                             "description": (
-                                "Honest logistics: crowds and when they thin out, sun direction "
-                                "at the exact shoot time, parking/access, permit requirements, "
-                                "seasonal caveats. Flag any missing gear the photographer will need."
+                                "Shared logistics for this location: crowds and when they thin out, "
+                                "sun direction at the exact shoot time, parking/access, permit "
+                                "requirements, seasonal caveats. Flag any missing gear the "
+                                "photographer will need for any of the shots above."
                             )
                         },
 
@@ -137,8 +165,9 @@ PHOTO_TOOL: dict = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "List ONLY items from the photographer's vault that this specific "
-                                "shot genuinely requires. E.g. ['tripod', '6-stop ND', '16-35mm f/2.8']. "
+                                "List ONLY items from the photographer's vault that any of the shots "
+                                "genuinely require. E.g. ['tripod', '6-stop ND']. "
+                                "Use lens category names, not focal lengths. "
                                 "Empty array if only the camera body is needed."
                             )
                         },
@@ -146,17 +175,16 @@ PHOTO_TOOL: dict = {
                         "distance_from_accommodation": {
                             "type": "string",
                             "description": (
-                                "Approximate walking or transit time from the accommodation, "
+                                "Approximate walking or transit time from the starting point, "
                                 "e.g. '12 min walk' or '8 min metro'. "
-                                "Write 'N/A' if no accommodation was provided."
+                                "Write 'N/A' if no starting point was provided."
                             )
                         },
 
                     },
                     "required": [
                         "day", "name", "address", "lat", "lng",
-                        "shoot_window", "the_shot", "the_setup",
-                        "the_settings", "the_reality_check",
+                        "shoot_window", "shots", "the_reality_check",
                     ],
                 },
             },
