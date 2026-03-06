@@ -2,7 +2,7 @@
 
 ## What the app does
 
-Trip Master is an internal tool for travel consultants. A logged-in staff member enters a destination, trip duration, and preferences (photography spots, restaurants, attractions). The app calls the Anthropic Claude API to generate curated recommendations for each category, optionally verifies each venue is still open via the Google Places API, then assembles a formatted HTML travel guide the consultant can review and save.
+Trip Master is an internal tool for travel photographers and their clients. A logged-in staff member enters a destination, shoot dates, photography interests, and optionally selects a **gear profile** (camera body, lenses, filters, tripod). The app calls the Anthropic Claude API to generate curated photography shoot plans — Kelby-style cards with exact gear calls, golden-hour windows, Google Earth links, and reality-check logistics — then assembles a formatted HTML guide the consultant can review and save.
 
 The app is a single-service, full-stack web app: the FastAPI backend serves both the API routes **and** the frontend from the same Railway URL.
 
@@ -13,15 +13,17 @@ The app is a single-service, full-stack web app: the FastAPI backend serves both
 ```
 trip-guide-app/
 │
-├── app.py              # Main FastAPI application — routes, AI scouts, config
+├── app.py              # Main FastAPI application — routes, AI scout, config
 ├── auth.py             # Authentication router — JWT, login, rate limiting
-├── models.py           # SQLAlchemy ORM models (StaffUser, Client, Trip)
+├── models.py           # SQLAlchemy ORM models (StaffUser, Client, GearProfile, Trip)
 ├── clients.py          # Client CRM router — CRUD for client records
 ├── trips.py            # Trips router — CRUD for saved trip guides
 ├── schemas.py          # Pydantic v2 request/response models (validation)
 ├── database.py         # SQLAlchemy engine, SessionLocal, get_db dependency
 ├── redis_client.py     # Redis connection, SessionStore, Cache, rate limiters
-├── tool_schemas.py     # Claude tool definitions for structured scout output
+├── tool_schemas.py     # Claude tool definition for structured photo scout output
+├── ephemeris.py        # Sunrise/sunset/golden-hour/blue-hour/moon calculations (astral)
+├── prompts.py          # All Claude prompt builder functions (Kelby-style system + user prompts)
 ├── manage.py           # Click CLI — create-user admin command
 │
 ├── frontend/
@@ -32,19 +34,26 @@ trip-guide-app/
 │       ├── api.js          # apiFetch wrapper, checkAuth, handleLogin, handleLogout
 │       ├── form.js         # Form controls, progress animation, resetForm, showError
 │       ├── generate.js     # Form submit handler and async job polling
-│       ├── review.js       # Review screen: toggle, bulk select, edit panel, replace
+│       ├── review.js       # Review screen: Kelby card layout, toggle, edit panel, replace
 │       ├── finalize.js     # Final guide generation and display
-│       ├── clients.js      # Client CRM: list, create modal
+│       ├── clients.js      # Client CRM + full gear profile CRUD (list, create, edit, delete, panel)
 │       ├── trips.js        # Saved trips panel: list, load, toggle
 │       └── styles/
-│           └── main.css    # All styles (extracted from the original index.html)
+│           └── main.css    # All styles
+│
+├── tests/
+│   ├── conftest.py         # Fixtures: StaticPool SQLite, test_user, anon_client, auth_client
+│   ├── test_auth.py        # 8 tests: health, 401/403 guards, login, CSRF
+│   ├── test_generate.py    # 10 tests: job_id, date validation, polling, auth
+│   ├── test_ephemeris.py   # 19 tests: Barcelona/London known dates, moon phase, format block
+│   ├── test_clients.py     # 12 tests: gear profile CRUD, cross-user isolation, auth
+│   └── test_finalize.py    # 7 tests: session injection, subset photos, HTML output
 │
 ├── migrations/         # Alembic migration scripts
 │   ├── env.py          # Alembic environment — imports db.metadata, reads DATABASE_URL
 │   └── versions/       # One file per schema revision
 │
-├── index.html          # Original monolithic file — retained but no longer served
-│
+├── pytest.ini          # asyncio_mode=auto, testpaths=tests
 ├── wsgi.py             # Stub re-export kept for tooling compatibility
 ├── Procfile            # Railway/Gunicorn startup + Alembic release phase
 ├── runtime.txt         # Pins Python version for Railway (python-3.11.9)
@@ -63,7 +72,7 @@ trip-guide-app/
 | Language | Python 3.11.9 | Pinned in runtime.txt for Railway |
 | Web framework | FastAPI 0.115.x | Async-native, Pydantic validation built in |
 | ASGI server | Gunicorn 21.2.0 + UvicornWorker | Production-grade async workers |
-| HTTP client | httpx 0.28.x | Async HTTP replaces urllib.request in scouts |
+| HTTP client | httpx 0.28.x | Async HTTP for Places API and map image fetching |
 | Request validation | Pydantic v2 | Replaces all manual `_sanitise_line`/`_clamp` calls |
 | Database ORM | SQLAlchemy 2.0 (sync) | Models, query builder — sync ORM via run_in_threadpool |
 | Database (prod) | PostgreSQL via Supabase | Managed, free tier available |
@@ -73,10 +82,12 @@ trip-guide-app/
 | Session store | Redis (Railway add-on) | Cross-worker session persistence (falls back to in-memory) |
 | Cache | Redis | Cross-worker scout result cache (falls back to in-memory) |
 | Rate limiting | Redis sorted sets | Login + per-user AI rate limits (falls back to in-memory) |
-| AI | Anthropic SDK — AsyncAnthropic (Claude Haiku 4.5) | Async scout calls via asyncio.gather |
-| Place verification | Google Places API (optional) | Confirms venues are still open |
+| AI | Anthropic SDK — AsyncAnthropic (Claude Haiku 4.5) | Async photo scout |
+| Ephemeris | astral 3.2 | Sunrise/sunset/golden-hour/blue-hour/moon per GPS coord + date |
+| Place verification | Google Places API (optional) | Confirms photo locations are accessible |
 | Env vars | python-dotenv 1.0.0 | Loads .env in development |
 | Hosting | Railway.app (Hobby plan) | Git-connected, auto-deploys on push |
+| Test runner | pytest + pytest-asyncio | 59 tests, asyncio_mode=auto, StaticPool SQLite |
 
 ---
 
@@ -89,11 +100,11 @@ All configuration lives in environment variables. In development, these are load
 | `ANTHROPIC_API_KEY` | **Yes** | Anthropic API key (`sk-ant-...`). Get from console.anthropic.com |
 | `JWT_SECRET_KEY` | **Yes** | Long random string for signing auth tokens. Generate with: `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `DATABASE_URL` | **Yes (prod)** | PostgreSQL connection string from Supabase. Uses SQLite by default in dev |
-| `REDIS_URL` | No | Redis connection string (Railway Redis add-on sets this automatically). Enables cross-worker session store, cache, and rate limiting. Falls back to in-memory if not set |
+| `REDIS_URL` | No | Redis connection string (Railway Redis add-on sets this automatically). Falls back to in-memory if not set |
 | `FLASK_ENV` | Yes | Set to `production` on Railway. Enables HSTS headers and strict cookie security |
-| `GOOGLE_PLACES_API_KEY` | No | Enables real-time venue verification. App works without it (verification is skipped) |
-| `SCOUT_MODEL` | No | Anthropic model ID to use for all scouts. Defaults to `claude-haiku-4-5-20251001` |
-| `SCOUT_MODEL_LABEL` | No | Human-readable label for the model, shown in the health endpoint |
+| `GOOGLE_PLACES_API_KEY` | No | Enables real-time location verification and ephemeris geocoding. App works without it |
+| `SCOUT_MODEL` | No | Anthropic model ID for the photo scout. Defaults to `claude-haiku-4-5-20251001` |
+| `SCOUT_MODEL_LABEL` | No | Human-readable label, shown in the health endpoint |
 | `CORS_ORIGINS` | No | Comma-separated allowed origins. Not needed when frontend and backend share the same Railway URL |
 | `PORT` | Auto | Set automatically by Railway. Gunicorn binds to this |
 
@@ -102,7 +113,6 @@ Supabase provides two connection string formats. **Always use the Transaction Po
 ```
 postgresql://postgres.YOURPROJECTREF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
 ```
-The direct connection on port 5432 is blocked by Supabase's free tier firewall for external cloud hosts.
 
 ---
 
@@ -113,189 +123,167 @@ Authentication is handled entirely in `auth.py`.
 1. The staff member posts `{ email, password }` to `POST /auth/login`
 2. bcrypt verifies the password against the stored hash
 3. A JWT is created containing the user ID and an 8-hour expiry
-4. The JWT is written into an **httpOnly cookie** called `tm_token` — JavaScript cannot read this cookie, which protects against XSS token theft
+4. The JWT is written into an **httpOnly cookie** called `tm_token` — JavaScript cannot read this cookie
 5. Every subsequent request from the browser automatically sends this cookie
-6. The `get_current_user` FastAPI dependency validates the cookie on every protected route, loads the user from the database, then slides the token expiry (re-issues a fresh 8-hour cookie on each request so active sessions don't expire mid-use)
+6. The `get_current_user` FastAPI dependency validates the cookie on every protected route and slides the token expiry (re-issues a fresh 8-hour cookie on each request)
 
 ### CSRF defence
-All state-changing requests (POST, PUT, DELETE, PATCH) require the `X-Requested-With: XMLHttpRequest` header. The browser never attaches this header automatically on cross-site requests, so it cannot be forged by a malicious third-party page even if it can trigger a request with the user's session cookie. The `apiFetch()` wrapper in `frontend/src/api.js` adds this header to every call automatically.
+All state-changing requests (POST, PUT, DELETE) require the `X-Requested-With: XMLHttpRequest` header. The `apiFetch()` wrapper in `api.js` adds this header automatically.
 
-**Important when calling the API programmatically (e.g. curl or test scripts):** you must include both the `tm_token` cookie and the `X-Requested-With: XMLHttpRequest` header on all POST/PUT/DELETE requests, or you will receive HTTP 403.
+**CSRF vs auth precedence:** The CSRF header check fires *before* the auth cookie check on state-changing routes. Unauthenticated POST/PUT/DELETE requests without the CSRF header return **403** (not 401). Tests must assert `in {401, 403}` for unauthenticated mutating requests.
 
 ### Creating the first admin user
-There is no registration UI. Staff accounts are created by an admin using the CLI:
 ```bash
 # In the Railway shell (Railway → service → Shell tab):
 python manage.py create-user --role admin
-# Follow the prompts for email, name, and password
-
-# To create a regular staff account:
 python manage.py create-user --role staff
 ```
 
-### Login rate limiting
-Failed login attempts are tracked per IP address using Redis sorted sets. After 10 failures within 5 minutes, the IP is blocked for 10 minutes and receives HTTP 429. When Redis is available this persists across deploys and is shared between all workers. Falls back to in-memory tracking (per-worker, resets on restart) if Redis is unreachable.
-
-### Per-user AI endpoint rate limiting
-Authenticated users are rate-limited on the two expensive AI endpoints to prevent runaway API cost from a single account:
-
-| Endpoint | Limit | Window |
-|---|---|---|
-| `POST /generate` | 20 requests | 10 minutes |
-| `POST /replace` | 60 requests | 10 minutes |
-
-Implemented in `auth.py` via `check_user_rate_limit(user_id, endpoint)` using Redis sorted-set sliding windows. The limit is keyed by `(user_id, endpoint)` so each user has an independent budget per endpoint. Returns HTTP 429 with a `retry_after` count in the error message. Limits are shared across all workers and survive redeploys when Redis is available; falls back to in-memory (per-worker, resets on restart) when Redis is unreachable.
+### Rate limiting
+- **Login:** 10 failures per IP per 5 minutes → 10-minute lockout → HTTP 429
+- **`/generate`:** 20 requests per user per 10 minutes → HTTP 429 with `retry_after`
+- **`/replace`:** 60 requests per user per 10 minutes → HTTP 429 with `retry_after`
+- Redis-backed, shared across workers. Falls back to in-memory (per-worker) if Redis unreachable.
 
 ---
 
-## How the AI scouts work
+## How the photo scout works
 
-The core feature is the `/generate` endpoint in `app.py`. When a consultant clicks "Generate", the app:
+The core feature is the `/generate` endpoint in `app.py`. When a consultant clicks "Generate Guide":
 
-1. **Validates the request** — checks location, duration (1–14 days), and which categories are enabled (photos, restaurants, attractions)
-2. **Loads the client profile** — if a `client_id` is sent with the request, the client's `home_city`, `preferred_budget`, `travel_style`, `dietary_requirements`, and `notes` are loaded from the DB and injected into each scout prompt for personalisation
-3. **Reads optional trip context** — `accommodation` (hotel name/address used as the travel origin for distance estimates) and `pre_planned` (already-committed events the guide should work around) are accepted as request fields and passed to each scout
-4. **Runs up to 3 scouts concurrently** using `asyncio.gather()`:
-   - `call_photo_scout` — photography locations with timing, setup, and pro tips
-   - `call_restaurant_scout` — dining recommendations with cuisine, price range, and booking notes; respects dietary requirements as a hard constraint
-   - `call_attraction_scout` — sightseeing with practical visit info; avoids duplicating pre-planned commitments
-5. **Each scout** sends a prompt to Claude Haiku via `AsyncAnthropic` using structured tool use (`tools=[TOOL], tool_choice={"type": "any"}`). Claude is forced to call the tool, returning a typed `block.input` dict — no JSON parsing, no markdown-fence stripping needed. Tool schemas live in `tool_schemas.py`. Scout results include a `travel_time` field (estimated travel from the accommodation) and a `why_this_client` field (personalisation rationale)
-6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each venue is verified via the Places Text Search API using `httpx.AsyncClient`. Permanently closed venues are filtered out. Verification calls run concurrently inside each scout using `asyncio.gather()`
-7. **Retry logic** — if a scout returns 0 results (parse failure or all venues filtered), it retries up to 2 more times with a 1-second delay between attempts
-8. **Session store** — verified results are stored in Redis (keyed by UUID, 1-hour TTL) via the `SessionStore` wrapper in `redis_client.py`. Results are also saved to the DB `Trip` record immediately so `/replace` can reconstruct context on any worker. Falls back to an in-memory dict if Redis is unreachable
-9. **`/finalize`** — takes the session ID, assembles the full HTML travel guide (including fetching Google Static Map images as base64 data URIs via `httpx`), and returns it to the browser
+1. **Validates the request** — location, start/end dates (1–14 days, non-reversed), photography interests
+2. **Loads the gear profile** — if `gear_profile_id` is sent, the photographer's gear vault (camera body, lenses, filters, tripod) is loaded from the DB and injected into the scout prompt for tailored settings and setup advice
+3. **Loads the client profile** — if `client_id` is sent, the client's `home_city`, `preferred_budget`, `travel_style`, and `notes` are loaded and injected for personalisation
+4. **Computes ephemeris data** — geocodes the destination via Google Places API, then runs `get_daily_ephemeris()` from `ephemeris.py` for each shoot day. Returns sunrise/sunset/golden-hour/blue-hour windows and moon phase per day using the `astral` library
+5. **Runs the photo scout** via `asyncio.create_task` as a background job:
+   - Sends a Kelby-style system prompt (from `prompts.py`) + ephemeris block + client/gear context to Claude Haiku
+   - Uses structured tool use (`tools=[PHOTO_TOOL], tool_choice={"type": "any"}`) — Claude is forced to call the tool; `block.input` is a ready-to-use Python dict (no JSON parsing or markdown-fence stripping)
+   - Each location card has: `name`, `lat/lng`, `the_shot`, `the_setup`, `the_settings`, `the_reality_check`, `shoot_window`, `required_gear`, `distance_from_accommodation`
+6. **Google Places verification** (if `GOOGLE_PLACES_API_KEY` is set) — each location verified via Places Text Search API
+7. **Session store** — results stored in Redis (UUID key, 1-hour TTL). Trip record saved to DB with `gear_profile_id`, `start_date`, `end_date`
+8. **`/finalize`** — takes session ID + approved photo indices, assembles full HTML guide (including Google Static Map images as base64 data URIs), returns to browser
 
-### Travel time estimates
-If the consultant enters an accommodation address on the generate form, the app:
-1. Geocodes the address once via the Places API (same key as venue verification — no additional API needed)
-2. After verifying each venue, computes the straight-line (haversine) distance from the accommodation coordinates to the venue's `_lat`/`_lng`
-3. Formats it as a human-readable estimate, e.g. `~650 m · ~8 min walk` or `~2.1 km · ~26 min walk`
-4. Writes this into the `travel_time` field, overwriting the Claude-generated text
+### Ephemeris engine (`ephemeris.py`)
+Input: GPS coordinates + list of dates
+Output: per-day dict with UTC-aware datetimes for sunrise, sunset, golden-hour start/end, blue-hour start/end, moon phase name, moon illumination fraction.
 
-Walking speed used: **80 m/min** — a comfortable urban pace that accounts for pavements and crossings. Straight-line distance is always shorter than the actual walking route, so the estimate is a lower bound. All values are labelled `~` to signal they are approximate.
+`format_ephemeris_block()` serialises this to a compact plain-text block injected into the scout prompt so Claude knows the exact light available each shoot day.
 
-**Fallback chain:** If Places verification is disabled (no API key), or if accommodation geocoding fails, or if an item has no `_lat`/`_lng` (unverified), the Claude-generated text estimate is preserved unchanged. The feature degrades silently — no errors are surfaced to the user.
+### Kelby-style output per location
+```
+The Shot         — why this location, what makes it special at this time of year and light
+The Setup        — specific gear from their vault, exact position, filter call-outs
+The Settings     — concrete ISO/aperture/shutter starting point (or film/phone equiv)
+The Reality Check— crowds, parking, access, sun direction at their specific shoot time/date
+```
 
-The accommodation string is also stored on the `Trip` DB record so `/replace` can geocode it for replacement items.
+### Accommodation-based distance estimates
+If the consultant enters an accommodation address, the app geocodes it once, computes haversine distance to each photo location, and formats a human-readable estimate (e.g. `~650 m · ~8 min walk`). Walking speed: 80 m/min. Degrades silently if geocoding fails.
 
 ### Redis-backed caching
-Scout results are cached in Redis (via the `Cache` class in `redis_client.py`) for 1 hour, keyed on a hash of location, duration, preferences, accommodation, pre_planned, and client profile. The cache is shared across all workers so a second consultant generating the same trip gets an instant result. Empty results are never cached so a failed parse always retries fresh. Falls back to an in-memory dict if Redis is unreachable.
+Scout results cached for 1 hour, keyed on hash of location, dates, gear profile, accommodation, pre_planned, and client profile. Shared across all workers. Empty results are never cached.
 
 ---
 
 ## Per-item replacement (`/replace`)
 
-The review screen lets consultants request one alternative for any item they dislike. This is handled by `POST /replace` in `app.py`.
+The review screen lets consultants request one alternative for any photo location they dislike.
 
-**How it works:**
-
-1. The frontend sends `session_id`, `trip_id`, `type` (photos/restaurants/attractions), `index`, `day`, `meal_type`, and `exclude_names` (names of current items — used as a fallback only; see step 4)
-2. The endpoint resolves the original trip parameters (location, budget, distance, cuisine/interest preferences) from the DB `Trip` record — this is intentional for multi-worker safety (avoids relying on the in-memory session store which may not be present on the worker handling this request)
-3. The client profile is reloaded from the DB if the trip has a `client_id`
-4. **Exclusion list is rebuilt server-side:** `_names_from_raw()` parses the relevant `raw_*` JSON column from the DB `Trip` record and extracts the `"name"` field from each stored item. This means the exclusion list is always built from server-generated, verified data — not client-supplied text. The client's `exclude_names` payload is only used as a sanitised fallback when no DB trip record is available (rare in-memory-only case). This eliminates the injection surface that existed when client-supplied names were placed verbatim into the prompt.
-5. The Anthropic API is called with `max_tokens=1200` using structured tool use — the same `PHOTO_TOOL`/`RESTAURANT_TOOL`/`ATTRACTION_TOOL` schemas from `tool_schemas.py`. `tool_choice={"type": "any"}` guarantees a tool call, so no markdown-fence stripping or JSON parsing is needed; `block.input` is a ready-to-use Python dict
-6. Google Places verification runs on the replacement if enabled
-8. The DB `Trip` record's relevant `raw_*` JSON array is updated at the given index
-9. The in-memory session store is also updated if still alive
-10. Returns `{ "item": { ...scout item dict... } }`
-
-**Frontend integration (`frontend/src/review.js`):**
-
-- `buildReviewItem(type, item, idx)` — builds a wrapper div containing the item row and a hidden inline edit panel. Each item row has two action buttons: **Edit** and **Alt**
-- `toggleEditPanel(type, idx)` — opens/closes the inline edit panel; focuses the name input on open
-- `saveItemEdit(type, idx)` — reads name and consultant notes from the panel, writes back to `rawData`, updates the visible name in the DOM
-- `replaceItem(type, idx)` — calls `POST /replace`, swaps the item in `rawData`, rebuilds the wrapper in-place via `buildReviewItem()`, applies a brief green flash animation, preserves the item's approval/rejection state
+1. Frontend sends `session_id`, `trip_id`, `type` (`"photos"`), `index`, `day`, `exclude_names`
+2. Endpoint resolves original trip parameters from the DB `Trip` record (multi-worker safe)
+3. Exclusion list is **rebuilt server-side** from `db_trip.raw_photos` — client-supplied `exclude_names` is only a sanitised fallback when no DB record exists
+4. Calls Claude with the same `PHOTO_TOOL` schema, `tool_choice={"type": "any"}`, `max_tokens=1200`
+5. Google Places verification runs on the replacement if enabled
+6. Updates both the DB `Trip` record and the in-memory session store
 
 ---
 
 ## Database models (`models.py`)
 
-Three tables, all with soft-delete and UTC timestamps.
-
 ### `StaffUser`
-Travel consultant / admin accounts. Passwords are stored as bcrypt hashes (12 rounds). Never stores plaintext passwords.
-
 | Column | Type | Notes |
 |---|---|---|
-| id | Integer PK | Auto-increment |
+| id | Integer PK | |
 | email | String(255) | Unique, lowercase |
 | full_name | String(255) | Display name |
-| password_hash | String(255) | bcrypt hash |
+| password_hash | String(255) | bcrypt hash (12 rounds) |
 | role | String(20) | `admin` or `staff` |
-| is_active | Boolean | Soft-disable without deleting |
-| last_login_at | DateTime | UTC, updated on each login |
+| is_active | Boolean | Soft-disable |
+| last_login_at | DateTime | UTC |
 | created_at | DateTime | UTC |
 
 ### `Client`
-Travel client records managed by staff. Reference codes are auto-generated as CLT-001, CLT-002, etc.
+| Column | Type | Notes |
+|---|---|---|
+| id | Integer PK | |
+| reference_code | String(20) | Auto-generated: CLT-001, CLT-002… |
+| name | String(255) | Required |
+| email / phone / company | String | Optional |
+| home_city | String(255) | Injected into scout prompts |
+| preferred_budget | String(50) | e.g. "moderate", "luxury" |
+| travel_style | String(255) | Free-text, injected into prompts |
+| notes | Text | General freeform notes |
+| tags | String(500) | Comma-separated labels |
+| is_deleted | Boolean | Soft-delete |
+| created_by_id | FK → StaffUser | |
+| created_at, updated_at | DateTime | UTC |
+
+### `GearProfile`
+Photographer's gear vault. One user can have many profiles (e.g. "Travel Kit", "Full Studio").
 
 | Column | Type | Notes |
 |---|---|---|
-| id | Integer PK | Auto-increment |
-| reference_code | String(20) | Auto-generated: CLT-001, CLT-002… Unique, indexed |
-| name | String(255) | Required |
-| email | String(255) | Optional |
-| phone | String(50) | Optional |
-| company | String(255) | Optional |
-| home_city | String(255) | Used to personalise scout prompts |
-| preferred_budget | String(50) | e.g. "budget", "moderate", "luxury" — injected into prompts |
-| travel_style | String(255) | Free-text, e.g. "adventure traveller, prefers off-the-beaten-path" |
-| dietary_requirements | Text | Hard constraint in restaurant scout, e.g. "vegetarian, nut allergy" |
-| notes | Text | General freeform notes about the client |
-| tags | String(500) | Comma-separated labels for filtering |
-| is_deleted | Boolean | Soft-delete flag |
-| created_by_id | FK → StaffUser | Which staff member created the record |
+| id | Integer PK | |
+| staff_user_id | FK → StaffUser | Indexed; cascade delete |
+| name | String(100) | e.g. "Travel Kit" |
+| camera_type | String(50) | One of 7 enum values (see `CAMERA_TYPES` in `models.py`) |
+| lenses | Text (JSON) | Array of focal-length strings |
+| has_tripod | Boolean | |
+| has_filters | Text (JSON) | Array of filter strings |
+| has_gimbal | Boolean | |
+| notes | Text | Free-text kit notes |
 | created_at, updated_at | DateTime | UTC |
+
+**Allowed `camera_type` values:** `full_frame_mirrorless`, `apsc_mirrorless`, `apsc_dslr`, `full_frame_dslr`, `smartphone`, `film_35mm`, `film_medium_format`
 
 ### `Trip`
-Saved travel guide records. Stores both the raw AI output and the final HTML.
-
 | Column | Type | Notes |
 |---|---|---|
-| id | Integer PK | Auto-increment |
-| client_id | FK → Client | Optional — links trip to a client record |
-| created_by_id | FK → StaffUser | Which staff member generated it |
-| title | String(255) | Optional, auto-generated if blank |
+| id | Integer PK | |
+| client_id | FK → Client | Optional |
+| created_by_id | FK → StaffUser | |
+| gear_profile_id | FK → GearProfile | Optional |
+| title | String(255) | Optional |
 | status | String(20) | `draft` or `finalized` |
 | location | String(255) | Destination name |
-| duration | Integer | Trip length in days |
-| budget | String(50) | Budget preference used in prompts |
-| distance | String(50) | Travel radius used in prompts |
-| include_photos/dining/attractions | Boolean | Which scout categories were enabled |
-| photos/restaurants/attractions_per_day | Integer | Counts per day for each category |
+| duration | Integer | Nullable — legacy only; new trips use start/end dates |
+| start_date | Date | Shoot start date |
+| end_date | Date | Shoot end date |
+| budget | String(50) | Budget preference |
+| distance | String(50) | Travel radius |
+| include_photos | Boolean | Always True for new trips |
+| photos_per_day | Integer | Photo spots per day |
 | photo_interests | String(500) | Photography style preferences |
-| cuisines | String(500) | Cuisine preferences for restaurant scout |
-| attraction_cats | String(500) | Attraction category preferences |
-| accommodation | String(500) | Hotel/address used as travel origin for distance estimates |
+| accommodation | String(500) | Hotel/address for distance estimates |
 | raw_photos | Text (JSON) | Full verified item dicts from photo scout |
-| raw_restaurants | Text (JSON) | Full verified item dicts from restaurant scout |
-| raw_attractions | Text (JSON) | Full verified item dicts from attraction scout |
-| approved_photo/restaurant/attraction_indices | Text (JSON) | Index arrays from `/finalize` review step |
+| approved_photo_indices | Text (JSON) | Index array from `/finalize` review |
 | final_html | Text | Rendered HTML guide |
-| colors | String(500) (JSON) | Color theme dict |
-| session_id | String(36) | UUID from `/generate` — links DB record to in-memory session |
-| is_deleted | Boolean | Soft-delete flag |
+| session_id | String(36) | UUID from `/generate` |
+| is_deleted | Boolean | Soft-delete |
 | created_at, updated_at | DateTime | UTC |
 
-### Database configuration
-`database.py` reads `DATABASE_URL` from the environment. A `_safe_db_url()` helper normalises the URL (e.g. converts Railway's `postgres://` prefix to `postgresql://`) so the raw Supabase connection string can be pasted directly into Railway without manual editing.
-
-For SQLite (local dev only), WAL (Write-Ahead Logging) mode is enabled on every new connection via `sqlalchemy.event.listen`. This allows concurrent readers and a single writer simultaneously, which prevents "database is locked" errors during local testing.
+**`duration_days` property:** returns `(end_date - start_date).days + 1` when dates are set, falls back to stored `duration` integer for legacy trips.
 
 ### Schema migrations
-Schema changes are managed by **Alembic** (added in Phase 4). The `Procfile` `release:` phase runs `alembic upgrade head` before the web process starts on every Railway deploy, so migrations are applied automatically with zero downtime.
+Managed by **Alembic**. The `Procfile` `release:` phase runs `alembic upgrade head` automatically on every Railway deploy.
 
-`db.metadata.create_all(engine)` still runs at startup as a safety net for fresh databases (creates any tables that don't yet exist). The old manual `_migrations` list of `ALTER TABLE IF NOT EXISTS` statements has been deleted — Alembic handles all schema evolution from this point.
-
-**When adding a new column to an existing model:**
 ```bash
-# 1. Edit models.py (add the Column)
-# 2. Generate the migration
+# Adding a new column:
+# 1. Edit models.py
 alembic revision --autogenerate -m "add foo column to trips"
-# 3. Review the file generated in migrations/versions/
-# 4. Apply locally
+# 2. Review the generated migration file
 alembic upgrade head
-# 5. Push — Railway release phase runs alembic upgrade head automatically
+# 3. Push — Railway handles production automatically
 ```
 
 ---
@@ -304,108 +292,112 @@ alembic upgrade head
 
 | Measure | Where | What it does |
 |---|---|---|
-| httpOnly JWT cookie | `auth.py` | JavaScript cannot read the auth token — prevents XSS token theft |
-| `SameSite=Lax` cookie | `auth.py` | Browser won't send cookie on cross-site requests — primary CSRF defence |
-| `X-Requested-With` CSRF header | `auth.py` + `index.html` | Secondary CSRF defence — all state-changing requests require this custom header, which browsers never attach automatically on cross-site requests |
-| bcrypt password hashing | `auth.py` | Passwords stored as bcrypt hashes with 12 rounds — slow enough to resist brute force |
-| Login rate limiting | `auth.py` | Max 10 failures per IP per 5 minutes, then 10-minute lockout — Redis-backed, shared across workers |
-| Per-user AI rate limiting | `auth.py` | `/generate`: 20 req/10 min per user; `/replace`: 60 req/10 min per user — Redis-backed, returns HTTP 429 with `retry_after` seconds |
-| Generic auth error messages | `auth.py` | "Invalid email or password" — never reveals whether the email exists |
-| HTTP security headers | `app.py` | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`, HSTS (production only) |
-| SSRF guard | `app.py` | `_fetch_static_map_as_base64()` only fetches from `https://maps.googleapis.com/` — blocks server-side request forgery |
-| Generic error messages in API | `app.py` | `/generate` and `/finalize` return generic errors on failure — never leaks internal exception details to the browser |
-| Prompt injection defence — system/user role separation | `app.py` | All Anthropic API calls use the `system` parameter for role definitions, output format schemas, and writing rules. User-supplied fields (location, accommodation, pre_planned, dietary_requirements, notes, exclude_names, etc.) are placed only in the `messages` user turn. Claude treats system content as more authoritative than user-message content, making it significantly harder for injected text in user fields to override the real instructions. |
-| `.gitignore` | repo root | Excludes `.env`, `*.db`, `venv/`, `__pycache__/`, `.DS_Store`, backup files |
-
-### Prompt injection — current posture and remaining work
-
-The system/user role separation is the primary defence. Additional hardening steps that would be required before any public-facing exposure:
-
-| Risk | Status | What's needed |
-|---|---|---|
-| System/user role separation | ✅ Implemented | Done — all scouts and `/replace` use `system` parameter |
-| Length caps on free-text fields | ✅ Implemented | Constants `MAX_FIELD_SHORT` (150), `MAX_FIELD_MEDIUM` (500), `MAX_EXCLUDE_NAME_LEN` (100), `MAX_EXCLUDE_LIST_LEN` (50) in `app.py`. Applied to `accommodation`, `pre_planned`, `budget`, `distance` in `/generate`; each `exclude_names` entry and the list itself in `/replace`; all string fields in `POST /clients` and `PUT /clients/<id>`. |
-| Newline stripping on single-line fields | ✅ Implemented | `_sanitise_line()` in `app.py` and `_clamp()` in `clients.py` run `re.sub(r'\s+', ' ', ...)` before truncation. Applied to all single-line fields: location, accommodation, budget, distance, each `exclude_names` entry; and all client fields except `notes`. Multi-line fields (`pre_planned`, `notes`) strip ends only — internal newlines are intentional. |
-| `exclude_names` server-side validation | ✅ Implemented | `/replace` now ignores the client-supplied `exclude_names` when a DB trip is found. Instead it calls `_names_from_raw()` which parses `db_trip.raw_photos/raw_restaurants/raw_attractions` and extracts the `"name"` field from each stored item — data that was generated and verified by the server at `/generate` time. The client list is only used as a sanitised fallback for in-memory-only sessions (no DB record). |
-| Per-user rate limiting on `/generate` and `/replace` | ✅ Implemented | `check_user_rate_limit(user_id, endpoint)` in `auth.py`. Limits: 20 `/generate` calls per user per 10 min; 60 `/replace` calls per user per 10 min. Returns HTTP 429 with seconds-to-retry in the error message. In-memory, per-worker — sufficient for an internal tool. |
+| httpOnly JWT cookie | `auth.py` | JavaScript cannot read the auth token |
+| `SameSite=Lax` cookie | `auth.py` | Browser won't send cookie on cross-site requests |
+| `X-Requested-With` CSRF header | `auth.py` + `api.js` | All state-changing requests require this custom header |
+| bcrypt password hashing | `auth.py` | 12 rounds — brute-force resistant |
+| Login rate limiting | `auth.py` | 10 failures per IP per 5 min → 10-min lockout → HTTP 429 |
+| Per-user AI rate limiting | `auth.py` | `/generate`: 20 req/10 min; `/replace`: 60 req/10 min → HTTP 429 |
+| Generic auth error messages | `auth.py` | Never reveals whether the email exists |
+| HTTP security headers | `app.py` | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, HSTS (prod) |
+| Content Security Policy | `app.py` | CSP with `'unsafe-inline'` in `script-src` (required for inline onclick handlers) |
+| SSRF guard | `app.py` | Map fetcher only connects to `maps.googleapis.com` |
+| Prompt injection defence | `app.py` | System/user role separation — user input in `messages` user turn only |
+| Length caps + newline stripping | `app.py`, `schemas.py` | All free-text fields sanitised before prompt injection |
+| Server-side exclusion rebuild | `app.py` | `/replace` ignores client-supplied `exclude_names` when a DB trip exists |
+| Cache-Control: no-cache | `app.py` | `NoCacheStaticFiles` class sets `no-cache, must-revalidate` on all `/src/*` responses — prevents stale JS/CSS after redeploy |
+| `.gitignore` | repo root | Excludes `.env`, `*.db`, `venv/`, `__pycache__/` |
 
 ---
 
 ## API routes
 
-All routes except `/`, `/health`, and `/auth/login` require authentication (valid `tm_token` cookie). All state-changing routes (POST, PUT, DELETE) also require the `X-Requested-With: XMLHttpRequest` header.
+All routes except `/`, `/src/*`, `/health`, and `/auth/login` require authentication (valid `tm_token` cookie). All state-changing routes also require `X-Requested-With: XMLHttpRequest`.
 
 ### Public
 | Method | Path | Description |
 |---|---|---|
-| GET | `/` | Serves `frontend/index.html` (the frontend shell) |
-| GET | `/src/*` | Static mount — serves `frontend/src/` ES modules and CSS |
-| GET | `/health` | Health check — returns JSON with status and model name |
-| POST | `/auth/login` | Login — `{ email, password }` → sets httpOnly cookie |
+| GET | `/` | Serves `frontend/index.html` (`Cache-Control: no-cache`) |
+| GET | `/src/*` | Static mount — `frontend/src/` ES modules and CSS (`Cache-Control: no-cache`) |
+| GET | `/health` | Returns `{ status, message }` with model name |
+| POST | `/auth/login` | `{ email, password }` → sets httpOnly cookie |
 | POST | `/auth/logout` | Clears the auth cookie |
 
 ### Authenticated
 | Method | Path | Description |
 |---|---|---|
-| GET | `/auth/me` | Returns current user's profile |
-| POST | `/generate` | Runs scouts, returns structured recommendations + session ID |
-| POST | `/finalize` | Assembles and returns final HTML guide from session data |
-| POST | `/replace` | Replaces a single review item with an alternative — see below |
-| GET | `/clients` | Lists all active clients (newest first) |
+| GET | `/auth/me` | Returns current user profile |
+| POST | `/generate` | Enqueues photo scout job → returns `{ job_id }` immediately |
+| GET | `/jobs/{job_id}` | Polls job status → `{ status, progress, message, results, error }` |
+| POST | `/finalize` | Assembles and returns final HTML guide |
+| POST | `/replace` | Replaces a single photo location with an alternative |
+| GET | `/clients` | Lists all active clients |
 | POST | `/clients` | Creates a new client |
-| GET | `/clients/<id>` | Gets one client with their trips |
-| PUT | `/clients/<id>` | Updates client fields (partial update supported) |
-| DELETE | `/clients/<id>` | Soft-deletes a client (trips are preserved) |
+| GET | `/clients/{id}` | Gets one client |
+| PUT | `/clients/{id}` | Updates client fields |
+| DELETE | `/clients/{id}` | Soft-deletes a client |
+| GET | `/gear-profiles` | Lists all gear profiles for the current user |
+| POST | `/gear-profiles` | Creates a new gear profile |
+| PUT | `/gear-profiles/{id}` | Updates a gear profile (scoped to current user) |
+| DELETE | `/gear-profiles/{id}` | Deletes a gear profile (scoped to current user) |
 | GET | `/trips` | Lists saved trips for current user |
 | POST | `/trips` | Saves a trip guide |
-| GET | `/trips/<id>` | Gets one trip |
-| PUT | `/trips/<id>` | Updates trip fields/status |
-| DELETE | `/trips/<id>` | Soft-deletes a trip |
+| GET | `/trips/{id}` | Gets one trip |
+| PUT | `/trips/{id}` | Updates trip fields/status |
+| DELETE | `/trips/{id}` | Soft-deletes a trip |
+
+### `POST /generate` — request body
+```json
+{
+  "location":        "Barcelona, Spain",
+  "start_date":      "2026-06-15",
+  "end_date":        "2026-06-18",
+  "photo_interests": ["Architecture & Buildings", "Sunrise & Sunset (Golden Hour)"],
+  "photos_per_day":  3,
+  "budget":          "Moderate",
+  "distance":        "Up to 15 minutes",
+  "accommodation":   "Hotel Arts, Carrer de la Marina 19-21",
+  "pre_planned":     "Sagrada Família visit booked for Day 1 morning",
+  "client_id":       5,
+  "gear_profile_id": 2
+}
+```
+Returns `{ "job_id": "uuid" }` immediately. Poll `GET /jobs/{job_id}` for results.
 
 ### `POST /replace` — request body
 ```json
 {
   "session_id":    "uuid-from-generate",
   "trip_id":       5,
-  "type":          "restaurants",
+  "type":          "photos",
   "index":         0,
   "day":           1,
-  "meal_type":     "lunch",
-  "exclude_names": ["Restaurant A", "Restaurant B"]
+  "exclude_names": ["Park Güell", "Barceloneta Beach"]
 }
 ```
-**Note on `exclude_names`:** when a DB trip record is found (the normal case), this field is ignored — the server rebuilds the exclusion list from `db_trip.raw_restaurants` (or `raw_photos`/`raw_attractions`) directly. The field is only used as a sanitised fallback for in-memory-only sessions.
-
-Returns `{ "item": { ...full scout item dict... } }` on success, or `{ "error": "..." }` with HTTP 422 if the model fails to produce a parseable alternative. Returns HTTP 429 if the user has exceeded their rate limit.
 
 ---
 
 ## Production deployment (Railway)
 
 ### How deploys work
-Railway watches the `main` branch of the GitHub repository (`bluesman1971/ClaudeWork`). Every `git push origin main` triggers an automatic redeploy — no manual action needed.
+Railway watches the `main` branch of `bluesman1971/ClaudeWork`. Every `git push origin main` triggers an automatic redeploy.
 
 ### Startup sequence
-1. Railway builds the container from `runtime.txt` (Python 3.11.9) and installs `requirements.txt`
-2. Railway runs the command in `Procfile` (make sure no **Start Command** override is set in the Railway dashboard — the dashboard field takes precedence over the Procfile):
+1. Railway builds container from `runtime.txt` (Python 3.11.9) and installs `requirements.txt`
+2. `release:` phase in `Procfile` runs `alembic upgrade head`
+3. Gunicorn starts 2 Uvicorn workers:
    ```
-   gunicorn app:app -k uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.0:$PORT --timeout 120 --access-logfile - --error-logfile -
+   gunicorn app:app -k uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0.0:$PORT --timeout 120
    ```
-3. Gunicorn starts 2 Uvicorn worker processes, each importing `app.py`
-4. FastAPI's `@app.on_event('startup')` handler runs: creates the `httpx.AsyncClient`, creates DB tables if they don't exist, runs column migrations, checks Redis connectivity
-5. Workers begin serving on the Railway-assigned `$PORT`
+4. FastAPI `@asynccontextmanager _lifespan()` runs: creates `httpx.AsyncClient`, initialises DB tables, checks Redis
 
-### Gunicorn configuration explained
-- `app:app` — module `app.py`, object `app` (the FastAPI instance)
-- `-k uvicorn.workers.UvicornWorker` — async ASGI worker (replaces `--worker-class gthread`)
-- `--workers 2` — 2 separate async processes (each loads the full app)
-- `--timeout 120` — 120-second request timeout (needed because Claude API calls can take 30–60 seconds)
-- No `--threads` flag — Uvicorn workers are single-threaded async; threading is irrelevant
+> **Important:** Ensure the Railway dashboard **Start Command** is blank so the `Procfile` is used. The dashboard field takes precedence over `Procfile`.
 
 ### Railway variables to set
 ```
 ANTHROPIC_API_KEY      = sk-ant-...
-JWT_SECRET_KEY         = (generate with: python -c "import secrets; print(secrets.token_hex(32))")
+JWT_SECRET_KEY         = (python -c "import secrets; print(secrets.token_hex(32))")
 DATABASE_URL           = postgresql://postgres.PROJECTREF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
 REDIS_URL              = (set automatically by Railway Redis add-on)
 FLASK_ENV              = production
@@ -430,16 +422,22 @@ pip install -r requirements.txt
 
 # 4. Create your .env file
 cp .env.example .env
-# Edit .env and fill in ANTHROPIC_API_KEY and JWT_SECRET_KEY at minimum
-# DATABASE_URL defaults to SQLite (trip_master.db) if not set — fine for dev
-# REDIS_URL is optional locally — app falls back to in-memory if not set
+# Edit .env: set ANTHROPIC_API_KEY and JWT_SECRET_KEY at minimum
 
 # 5. Create the first admin user
 python manage.py create-user --role admin
 
-# 6. Run the development server
-uvicorn app:app --reload
+# 6. Run the development server (backend serves frontend too — single terminal)
+uvicorn app:app --reload --port 8000
 # App runs at http://localhost:8000
+```
+
+### Running the test suite
+```bash
+source venv/bin/activate
+pytest                                           # run all 59 tests
+pytest tests/test_clients.py -v                  # run one module
+pytest --cov=. --cov-report=term-missing         # with coverage
 ```
 
 ---
@@ -453,36 +451,28 @@ python manage.py create-user --role staff
 ```
 
 ### Rotate the JWT secret key
-1. Generate a new key: `python -c "import secrets; print(secrets.token_hex(32))"`
+1. Generate: `python -c "import secrets; print(secrets.token_hex(32))"`
 2. Update `JWT_SECRET_KEY` in Railway variables
-3. **Note:** all existing sessions will be invalidated — every user will be logged out
-
-### Rotate the Anthropic API key
-1. Generate a new key at console.anthropic.com
-2. Update `ANTHROPIC_API_KEY` in Railway variables
-3. Railway will redeploy automatically
+3. **All existing sessions will be invalidated — every user will be logged out**
 
 ### Change the Claude model
-Update `SCOUT_MODEL` in Railway variables (e.g. `claude-sonnet-4-5-20250929`). All three scouts use the same model. No code change needed.
+Update `SCOUT_MODEL` in Railway variables (e.g. `claude-sonnet-4-5-20250929`). No code change needed.
 
 ### Reset the Supabase database password
-If you need to reset the DB password:
-1. Go to Supabase → Project Settings → Database → Reset password
-2. Copy the new password
-3. Rebuild the `DATABASE_URL` using the **Transaction Pooler** format (port 6543)
-4. Update `DATABASE_URL` in Railway variables
-
-### View live logs
-Railway → your service → **Deployments** → click the active deployment → scroll through logs. Each request is logged with method, path, status code, and response time. Scout results and errors are logged at INFO/ERROR level.
+1. Supabase → Project Settings → Database → Reset password
+2. Rebuild `DATABASE_URL` using the Transaction Pooler format (port 6543)
+3. Update `DATABASE_URL` in Railway variables
 
 ---
 
 ## Known limitations and future work
 
-- **Schema migrations — destructive changes need manual SQL** — Alembic handles adding columns and tables automatically. However, renaming or removing columns, adding constraints, or changing column types still requires writing the migration by hand (`alembic revision -m "..."` then editing the generated file). Run the migration locally with `alembic upgrade head` before pushing to Railway.
+- **Inline onclick handlers prevent full CSP** — `script-src` retains `'unsafe-inline'` because `index.html` and dynamically generated `innerHTML` in `review.js` use inline `onclick` attributes. Converting all inline handlers to `addEventListener` calls would allow removing `'unsafe-inline'` for full XSS protection.
 
-- **No email delivery** — there is no password reset flow. Forgotten passwords require an admin to create a new account or update the hash directly in the database.
+- **No email delivery** — no password reset flow. Forgotten passwords require an admin to create a new account or update the hash directly in the database.
 
-- **AI provider is single-vendor and single-model** — all three scouts use the same Anthropic model, set via the `SCOUT_MODEL` environment variable. Switching to a different Anthropic model is trivial (just update the env var). Switching to a different provider (OpenAI, Google Gemini, etc.) requires changing the client initialisation in `app.py`, porting the tool schemas in `tool_schemas.py` to the target provider's tool-use format, and updating the response extraction in each scout and `/replace` — roughly 15–20 lines of code plus a `requirements.txt` change. The prompts, retry logic, and downstream item processing are all provider-agnostic and would not need to change.
+- **Single-vendor AI** — all photo scouting uses Anthropic Claude Haiku via `SCOUT_MODEL`. Switching models within Anthropic is trivial (env var only). Switching providers requires updating the client initialisation, tool schemas, and response extraction in `app.py` and `tool_schemas.py` — roughly 15–20 lines.
 
-- **API cost** — Claude Haiku is the cheapest Anthropic model and was chosen deliberately to keep per-generation costs low, but each "Generate" click makes three separate API calls (one per scout), each with a large prompt and up to ~6,000 output tokens. High-volume usage will accumulate meaningful API costs. Monitor usage in the Anthropic console. If cost becomes a concern, options include: reducing `PHOTOS_PER_DAY`, `RESTAURANTS_PER_DAY`, and `ATTRACTIONS_PER_DAY` constants in `app.py`; capping `max_tokens` on each scout call; switching to a smaller/cheaper model via `SCOUT_MODEL`; or implementing a stricter server-side cache (currently results are cached 1 hour per location+duration+preferences+client profile combination, so repeat searches are free).
+- **API cost** — each "Generate" click makes one API call (the photo scout). High-volume usage accumulates meaningful API costs. Monitor in the Anthropic console. To reduce cost: lower `photos_per_day`, cap `max_tokens`, or switch models via `SCOUT_MODEL`.
+
+- **Static map images** — Google Static Maps API embeds base64 map images in the final HTML guide. Requires `GOOGLE_PLACES_API_KEY`. If not set, maps are omitted gracefully.

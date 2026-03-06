@@ -1,354 +1,137 @@
-# Trip Master Web App - Local Development Setup
+# Trip Master — Photography Guide Builder
 
-A web application that generates personalized travel guides combining photography locations, restaurant recommendations, and must-see attractions for any destination.
+An internal tool for travel photographers. Enter a destination, shoot dates, photography interests, and your gear kit — get a Kelby-style photography guide with exact shoot windows, gear-specific settings, Google Earth links, and reality-check logistics. Generated in under a minute, powered by Claude AI.
 
 ## Architecture
 
 ```
-Frontend (HTML/JS)          Backend (Flask)            Anthropic API
-   :5000                      :5001
-┌─────────────┐          ┌──────────────┐          ┌─────────────┐
-│  User Form  │ ─POST──> │   Flask API  │ ─POST──> │   Claude    │
-│   Browser   │          │ (3 scouts)   │          │             │
-└─────────────┘          └──────────────┘          └─────────────┘
-       ↑                        │
-       │                        │
-       └────── HTML/PDF ────────┘
+Browser (ES modules)       FastAPI backend             Anthropic API
+  :8000                      :8000
+┌──────────────────┐    ┌────────────────────┐    ┌──────────────┐
+│  Form + Review   │───>│  Photo Scout       │───>│ Claude Haiku │
+│  Kelby Cards     │    │  Ephemeris Engine  │    │ (tool use)   │
+│  Gear Profiles   │    │  Places Verify     │    └──────────────┘
+└──────────────────┘    │  Finalize + HTML   │
+                        └────────────────────┘
+                               │
+                         PostgreSQL (Supabase)
+                         Redis (session store)
 ```
 
-## Prerequisites
+Backend and frontend are served from the same Railway URL — no separate deployment needed.
 
-Before you start, make sure you have:
+## Quick Start
 
-1. **Python 3.8+** installed
-   - Check: `python --version`
+See **[QUICKSTART.md](QUICKSTART.md)** for the 5-minute local setup.
 
-2. **Anthropic API Key**
-   - Get from: https://console.anthropic.com/
-   - Create your API key if you don't have one yet
-
-3. **Basic terminal knowledge** to run commands
-
-## Installation Steps
-
-### Step 1: Clone or Navigate to the Project
-
+**Short version:**
 ```bash
-# If you have the files, navigate to the trip-guide-app directory
-cd /path/to/trip-guide-app
-```
-
-### Step 2: Create Python Virtual Environment
-
-```bash
-# Create virtual environment
-python -m venv venv
-
-# Activate it (Mac/Linux)
-source venv/bin/activate
-
-# Activate it (Windows)
-venv\Scripts\activate
-```
-
-You should see `(venv)` at the start of your terminal line.
-
-### Step 3: Install Dependencies
-
-```bash
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env  # add ANTHROPIC_API_KEY + JWT_SECRET_KEY
+python manage.py create-user --role admin
+uvicorn app:app --reload --port 8000
+# Open http://localhost:8000
 ```
 
-This installs:
-- `Flask` - Web framework
-- `Flask-CORS` - Cross-origin requests
-- `anthropic` - Anthropic API client
-- `weasyprint` - PDF generation
-- `python-dotenv` - Environment variables
+## Features
 
-### Step 4: Set Up Environment Variables
+- **Kelby-style photo plans** — every location gets four sections: The Shot, The Setup, The Settings, The Reality Check
+- **Gear-aware advice** — connect your camera body, lenses, and filters; get tailored settings and filter call-outs
+- **Ephemeris-driven timing** — sunrise, sunset, golden hour, blue hour, and moon phase for each shoot day
+- **Google Earth integration** — one-click street-level preview of every location
+- **Client management** — save client profiles with preferences; guide is personalised to their travel style
+- **Review + approve** — toggle locations on/off before generating the final guide
+- **Saved trips** — finalized guides saved to database; reload any trip from the panel
+- **PDF export** — browser-native print to PDF from the in-page preview
 
-```bash
-# Copy the example file
-cp .env.example .env
+## Technology Stack
 
-# Edit .env and add your API key
-# Mac/Linux:
-nano .env
+| Layer | Technology |
+|---|---|
+| Backend | FastAPI (Python 3.11) + Gunicorn/UvicornWorker |
+| AI | Anthropic Claude Haiku via structured tool use |
+| Ephemeris | `astral` 3.2 — sunrise/golden-hour/moon calculations |
+| Database | PostgreSQL (Supabase) / SQLite (local dev) |
+| Migrations | Alembic |
+| Session store | Redis (with in-memory fallback) |
+| Frontend | Vanilla ES modules, no build step |
+| Auth | JWT in httpOnly cookie + CSRF header |
+| Hosting | Railway.app |
+| Tests | pytest + pytest-asyncio (59 tests) |
 
-# Windows:
-notepad .env
-```
-
-Find this line and replace with your actual API key:
-```
-ANTHROPIC_API_KEY=sk-ant-...your-api-key-here...
-```
-
-Save and close the file.
-
-### Step 5: Run the Backend
-
-In your terminal (with venv activated):
-
-```bash
-python app.py
-```
-
-You should see:
-```
-Trip Master API - Local Development
-==================================================
-Backend running on: http://localhost:5001
-Open frontend: http://localhost:5000
-==================================================
- * Running on http://0.0.0.0:5001
-```
-
-**Leave this terminal running.**
-
-### Step 6: Open the Frontend
-
-Open a **new terminal** (keep the backend running in the first one):
-
-```bash
-# Navigate to the project directory
-cd /path/to/trip-guide-app
-
-# Start a simple web server for the frontend
-python -m http.server 5000
-```
-
-You should see:
-```
-Serving HTTP on 0.0.0.0 port 5000 (http://0.0.0.0:5000/) ...
-```
-
-### Step 7: Open in Your Browser
-
-Open your web browser and go to:
-```
-http://localhost:5000
-```
-
-You should see the Trip Master form!
-
-## Using the App
-
-### Basic Workflow
-
-1. **Enter Location** - e.g., "Barcelona, Spain"
-2. **Set Duration** - Number of days (1-14)
-3. **Select Interests** - Check at least one in each category:
-   - Photography (Architecture, Urban, Golden Hour, Landscapes)
-   - Dining (Local, Street Food, Fine Dining, Fusion)
-   - Attractions (Historical, Art, Shopping, Nature)
-4. **Choose Budget** - Budget-Conscious, Moderate, Upscale, or Flexible
-5. **Set Distance** - City Center, 15 min, 30 min, or Flexible
-6. **Click "Generate My Trip Guide"** - Wait 1-2 minutes
-7. **View Results** - See the generated guide in the iframe
-8. **Download PDF** - Get a printable version
-
-### What the App Does
-
-When you submit the form:
-
-1. **Photo Scout** - Generates 3 × duration photography locations with:
-   - Subject and composition details
-   - Lens recommendations
-   - Best lighting times
-   - Pro photography tips
-
-2. **Restaurant Scout** - Generates 2-3 × duration restaurants with:
-   - Cuisine and price information
-   - Signature dishes
-   - Hours and reservations info
-   - Insider tips
-
-3. **Attraction Scout** - Generates 4 × duration attractions with:
-   - Admission prices and hours
-   - Visit duration estimates
-   - Best times to visit
-   - Skip-the-line tips
-
-4. **Master Guide** - Combines all three into:
-   - Professional HTML document (viewable in browser)
-   - Beautiful PDF (downloadable and shareable)
-   - Integrated daily itinerary
-   - Practical planning section
-
-## Troubleshooting
-
-### "Connection refused" on localhost:5001
-
-**Problem:** Backend isn't running
-**Solution:**
-- Check that `python app.py` is running in the first terminal
-- Look for error messages about the port
-- Try a different port: edit `app.py` line ~395 and change `port=5001` to `port=5002`
-
-### "CORS error" or "Failed to fetch"
-
-**Problem:** Frontend can't reach backend
-**Solution:**
-- Make sure backend is running (`python app.py`)
-- Check backend is on port 5001
-- Check frontend URL is `http://localhost:5000` (not `127.0.0.1`)
-- Verify both are running on localhost
-
-### "Invalid API key" error
-
-**Problem:** Anthropic API key isn't set correctly
-**Solution:**
-- Check `.env` file has your real API key (starts with `sk-ant-`)
-- Not a typo or extra spaces
-- Restart the Flask server after changing `.env`
-
-### "PDF generation failed"
-
-**Problem:** weasyprint can't create PDF
-**Solution:**
-- Make sure all Python packages installed: `pip install -r requirements.txt`
-- On Mac, may need: `brew install weasyprint`
-- On Linux (Ubuntu): `sudo apt-get install python3-weasyprint`
-
-### Browser shows "Cannot GET /" on port 5000
-
-**Problem:** Frontend server not running
-**Solution:**
-- In a new terminal, run: `python -m http.server 5000`
-- Make sure you're in the `trip-guide-app` directory
-
-### API calls are very slow
-
-**Problem:** Anthropic API is slow or network issue
-**Solution:**
-- First call is slowest (1-2 minutes normal)
-- Check your internet connection
-- API is working if you see "Creating your personalized travel guide..."
-- Wait for completion
-
-## Project Files Explained
+## Project Structure
 
 ```
 trip-guide-app/
-├── app.py                 # Flask backend (main API)
-├── index.html             # Frontend (HTML form + JavaScript)
-├── requirements.txt       # Python dependencies
-├── .env.example          # Environment variables template
-├── .env                  # Your actual API key (created from .env.example)
-└── README.md             # This file
+├── app.py              # Main FastAPI app — routes, photo scout, config
+├── auth.py             # JWT auth, login, rate limiting
+├── models.py           # StaffUser, Client, GearProfile, Trip
+├── schemas.py          # Pydantic request/response validation
+├── ephemeris.py        # Sunrise/golden-hour/moon calculations
+├── prompts.py          # Claude prompt builder functions
+├── tool_schemas.py     # Claude structured output schema (PHOTO_TOOL)
+├── clients.py          # Client CRM router
+├── trips.py            # Saved trips router
+├── redis_client.py     # Redis session store + cache
+├── database.py         # SQLAlchemy engine + get_db dependency
+├── manage.py           # CLI: python manage.py create-user
+├── frontend/
+│   ├── index.html      # App shell
+│   └── src/            # ES modules: main.js, clients.js, review.js, etc.
+├── tests/              # pytest suite — 59 tests, no real API calls
+├── migrations/         # Alembic migration versions
+├── Procfile            # Railway: release (alembic) + web (gunicorn)
+├── requirements.txt    # Pinned Python dependencies
+└── .env.example        # Environment variable template
 ```
 
-### app.py
+## Environment Variables
 
-The Flask backend that:
-- Receives form data from frontend
-- Calls Anthropic API 3 times (Photo, Restaurant, Attraction scouts)
-- Orchestrates responses
-- Generates unified HTML and PDF
-- Returns results to frontend
+| Variable | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | **Yes** | From console.anthropic.com |
+| `JWT_SECRET_KEY` | **Yes** | `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `DATABASE_URL` | Prod | PostgreSQL (Supabase Transaction Pooler, port 6543). SQLite default in dev |
+| `REDIS_URL` | No | Railway Redis add-on sets this automatically |
+| `FLASK_ENV` | Prod | Set to `production` on Railway (enables HSTS, secure cookies) |
+| `GOOGLE_PLACES_API_KEY` | No | Location verification + ephemeris geocoding |
+| `SCOUT_MODEL` | No | Defaults to `claude-haiku-4-5-20251001` |
 
-### index.html
+## Running Tests
 
-The web interface that:
-- Collects user preferences
-- Sends requests to Flask backend
-- Displays HTML preview
-- Handles PDF download
-- Shows loading states and errors
-
-## API Endpoints
-
-### Health Check
-```
-GET http://localhost:5001/health
-```
-Returns: `{"status": "ok"}`
-
-### Generate Trip Guide
-```
-POST http://localhost:5001/generate
-Content-Type: application/json
-
-{
-  "location": "Barcelona, Spain",
-  "duration": "3",
-  "photo_interests": "Architecture & Buildings, Sunrise & Sunset",
-  "cuisines": "Traditional Local Cuisine, Street Food & Casual",
-  "attractions": "Historical & Cultural Sites, Art Museums",
-  "budget": "Moderate",
-  "distance": "Up to 15 minutes"
-}
+```bash
+source venv/bin/activate
+pytest               # 59 tests, all passing
+pytest -v            # verbose
 ```
 
-Returns:
-```json
-{
-  "status": "success",
-  "location": "Barcelona, Spain",
-  "duration": 3,
-  "html": "<html>...</html>",
-  "pdf_base64": "JVBERi0xLjQK...",
-  "photo_count": 9,
-  "restaurant_count": 9,
-  "attraction_count": 12
-}
+Tests use in-memory SQLite and stub all external APIs — no Anthropic key needed.
+
+## Deployment (Railway)
+
+1. Connect the GitHub repository to a Railway project
+2. Set environment variables in the Railway dashboard
+3. Add the Railway Redis add-on
+4. Leave the **Start Command** field blank — the `Procfile` handles startup
+5. Every `git push origin main` triggers an automatic redeploy
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the complete developer reference including all API routes, database schema, security measures, and maintenance runbook.
+
+## API Overview
+
+```
+POST /auth/login          — sign in, returns httpOnly JWT cookie
+GET  /auth/me             — current user profile
+POST /generate            — start photo scout → { job_id }
+GET  /jobs/{job_id}       — poll job status
+POST /finalize            — build final HTML guide
+POST /replace             — replace one photo location
+GET/POST /gear-profiles   — manage gear vaults
+PUT/DELETE /gear-profiles/{id}
+GET/POST /clients         — client CRM
+GET/POST /trips           — saved trip guides
+GET /health               — health check
 ```
 
-## Next Steps (After Testing)
-
-Once you confirm everything works locally, you can:
-
-1. **Deploy Backend**
-   - Heroku: `git push heroku main`
-   - AWS Lambda: Use Zappa wrapper
-   - DigitalOcean: Simple VPS deployment
-
-2. **Deploy Frontend**
-   - Vercel: Push to GitHub, auto-deploy
-   - Netlify: Drag & drop or Git integration
-   - AWS S3 + CloudFront: Static hosting
-
-3. **Add Features**
-   - User accounts (store saved guides)
-   - Email delivery
-   - Custom templates
-   - Payment integration (charge for guides)
-   - Analytics dashboard
-
-## Support & Issues
-
-If you encounter issues:
-
-1. Check the error message carefully
-2. Review the Troubleshooting section above
-3. Verify:
-   - Both terminals are running (frontend & backend)
-   - API key is correct in `.env`
-   - Port 5000 and 5001 are available
-   - Python 3.8+ installed
-   - All packages installed: `pip list`
-
-## Performance Notes
-
-- **First API call:** 30-60 seconds (slower due to model loading)
-- **Subsequent calls:** 20-40 seconds
-- **Total generation:** 1-2 minutes for complete guide
-- **PDF generation:** 10-20 seconds
-- **File sizes:** HTML ~200KB, PDF ~100KB
-
-## API Costs
-
-Running this locally uses Anthropic API:
-- Each guide generation ≈ 150k tokens
-- At $3/1M input tokens = ~$0.45 per guide
-- Subsequent guides will be faster and cheaper
-
-## License
-
-This is a personal project built locally. Free to use for yourself!
-
----
-
-**Happy travels! 🌍✈️**
+All state-changing routes require `X-Requested-With: XMLHttpRequest` (CSRF defence).

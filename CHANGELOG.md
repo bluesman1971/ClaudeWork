@@ -4,6 +4,28 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Hotfix] Cache-Control headers — 2026-03-06
+
+### Problem
+After a Railway redeploy, browsers served stale cached JavaScript files even though the new HTML had deployed correctly. Symptoms: (1) `window.openGearProfileModal` was undefined — old `main.js` didn't have it — so clicking "+ New" on the gear profile selector did nothing; (2) form submission showed "Please select at least one Dining preference" — old `generate.js` still had dining validation that was removed in Phase 4.
+
+### Root cause
+FastAPI's `StaticFiles` sets no `Cache-Control` header by default, so browsers apply heuristic caching (often many hours). The new `index.html` was served fresh (dynamic route), but the old `/src/main.js`, `/src/generate.js`, and `/src/clients.js` were served from the browser cache.
+
+### Fix
+Added `NoCacheStaticFiles` — a `StaticFiles` subclass that overrides `get_response()` to add `Cache-Control: no-cache, must-revalidate` to every `/src/*` response. Also added the same header to the root `/` route (`FileResponse` for `index.html`). Browsers now always revalidate JS/CSS using ETags on page load and never serve stale files after a redeploy.
+
+### Modified files
+| File | Change |
+|---|---|
+| `app.py` | Added `NoCacheStaticFiles` class; replaced `StaticFiles` mount with it; added `Cache-Control` header to root `FileResponse` |
+
+### Migration notes
+- **Immediate fix for users already affected:** hard refresh — **Cmd+Shift+R** (Mac) or **Ctrl+Shift+F5** (Windows) — bypasses the browser cache and loads the correct JS immediately.
+- No database or schema changes.
+
+---
+
 ## [Phase 5] Test suite — 2026-03-05
 
 ### What changed

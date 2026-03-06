@@ -3,70 +3,94 @@
 ## TL;DR Setup
 
 ### Prerequisites
-- Python 3.8+ installed
+- Python 3.11+ installed
 - Anthropic API key (from https://console.anthropic.com/)
 
-### Run It (3 steps)
+### Run It (one terminal)
 
-**Terminal 1 - Backend:**
 ```bash
 cd trip-guide-app
-python -m venv venv
-source venv/bin/activate  # or: venv\Scripts\activate (Windows)
+
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Configure environment
 cp .env.example .env
-# Edit .env and paste your API key
-python app.py
+# Edit .env — set ANTHROPIC_API_KEY and JWT_SECRET_KEY at minimum
+
+# Create your admin account
+python manage.py create-user --role admin
+
+# Start the server (backend + frontend in one process)
+uvicorn app:app --reload --port 8000
 ```
 
-**Terminal 2 - Frontend:**
-```bash
-cd trip-guide-app
-python -m http.server 5000
-```
+**Browser:** `http://localhost:8000`
 
-**Browser:**
+---
+
+## File Structure
+
 ```
-http://localhost:5000
+trip-guide-app/
+├── app.py                 ← FastAPI backend (serves frontend too)
+├── auth.py                ← JWT auth + rate limiting
+├── models.py              ← SQLAlchemy models (StaffUser, Client, GearProfile, Trip)
+├── clients.py             ← Client CRM router
+├── trips.py               ← Saved trips router
+├── schemas.py             ← Pydantic request validation
+├── ephemeris.py           ← Sunrise/golden-hour calculations
+├── prompts.py             ← Claude prompt builders (Kelby-style)
+├── tool_schemas.py        ← Claude structured output schema
+├── redis_client.py        ← Redis session store + cache
+├── manage.py              ← CLI for creating user accounts
+├── frontend/
+│   ├── index.html         ← HTML shell
+│   └── src/               ← ES modules (main.js, clients.js, review.js, etc.)
+├── tests/                 ← pytest test suite (59 tests)
+├── requirements.txt       ← Python packages
+├── .env                   ← Your config (created from .env.example)
+└── ARCHITECTURE.md        ← Full developer reference
 ```
 
 ---
 
-## File Structure You Should Have
+## Environment Setup
 
+Open `.env` and fill in at minimum:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...your-key-here...
+JWT_SECRET_KEY=any-long-random-string-here
 ```
-trip-guide-app/
-├── app.py                 ← Flask backend
-├── index.html             ← Web interface
-├── requirements.txt       ← Python packages
-├── .env                   ← Your API key (create from .env.example)
-├── .env.example           ← Template
-├── .gitignore
-├── README.md             ← Full documentation
-└── QUICKSTART.md         ← This file
+
+Optional (but unlocks more features):
+```bash
+GOOGLE_PLACES_API_KEY=...    # enables location verification + ephemeris geocoding
+REDIS_URL=redis://...         # shared session store (falls back to in-memory without it)
+```
+
+Generate a strong JWT secret:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 ---
 
 ## What Should Happen
 
-1. Browser loads form at `http://localhost:5000`
-2. Fill in location, duration, preferences
-3. Click "Generate My Trip Guide"
-4. Wait 1-2 minutes (it's calling Anthropic API 3 times)
-5. See HTML preview + Download PDF button
-6. Done!
-
----
-
-## API Key Setup
-
-1. Go to https://console.anthropic.com/
-2. Click "API Keys"
-3. Create new key (copy it)
-4. Open `trip-guide-app/.env`
-5. Replace `your_api_key_here` with actual key
-6. Save file
+1. Visit `http://localhost:8000`
+2. Sign in with the account you created via `manage.py`
+3. (Optional) Click **+ New** next to "Gear Profile" to add your camera kit
+4. Fill in: destination, start/end dates, photography interests
+5. Click **Generate Guide** — wait ~30–60 seconds (calling Anthropic API)
+6. Review the Kelby-style photo location cards (toggle on/off)
+7. Click **Generate Final Guide** → see your photography guide
+8. Use **Save as PDF** to print it
 
 ---
 
@@ -74,83 +98,59 @@ trip-guide-app/
 
 | Issue | Fix |
 |-------|-----|
-| Connection refused :5001 | Is `python app.py` running in Terminal 1? |
-| CORS error | Make sure Flask is on port 5001, frontend on 5000 |
-| "Cannot GET /" | Did you run `python -m http.server 5000` in Terminal 2? |
-| API key error | Check `.env` has real key (starts with `sk-ant-`) |
-| Slow generation | First request is slow (1-2 min). Normal. ✅ |
+| `Connection refused :8000` | Is `uvicorn app:app --reload` running? |
+| `Login failed` | Run `python manage.py create-user --role admin` to create an account |
+| `Invalid API key` | Check `.env` has real key starting with `sk-ant-` |
+| Guide generation hangs | Anthropic API call in progress — wait up to 60 seconds |
+| Modal/form not opening | Hard refresh: **Cmd+Shift+R** (Mac) or **Ctrl+Shift+R** (Windows) |
+| DB error on startup | Run `alembic upgrade head` to apply any pending migrations |
+
+---
+
+## Running Tests
+
+```bash
+source venv/bin/activate
+pytest                    # all 59 tests (no API keys needed)
+pytest -v                 # verbose output
+pytest tests/test_ephemeris.py   # single module
+```
+
+Tests use an in-memory SQLite database and stub out Claude/Redis — no real API calls.
+
+---
+
+## Creating Additional Users
+
+```bash
+# Admin (can manage everything):
+python manage.py create-user --role admin
+
+# Regular staff:
+python manage.py create-user --role staff
+```
 
 ---
 
 ## Commands Reference
 
-### Create/Activate Virtual Environment
-```bash
-python -m venv venv
-source venv/bin/activate     # Mac/Linux
-venv\Scripts\activate        # Windows
-```
-
-### Install Packages
-```bash
-pip install -r requirements.txt
-```
-
-### Run Backend
-```bash
-python app.py
-# Runs on http://localhost:5001
-```
-
-### Run Frontend
-```bash
-python -m http.server 5000
-# Runs on http://localhost:5000
-```
-
-### Deactivate Virtual Environment
-```bash
-deactivate
-```
+| Task | Command |
+|------|---------|
+| Start dev server | `uvicorn app:app --reload --port 8000` |
+| Run tests | `pytest` |
+| Create user | `python manage.py create-user --role admin` |
+| Apply DB migrations | `alembic upgrade head` |
+| Activate venv (Mac/Linux) | `source venv/bin/activate` |
+| Activate venv (Windows) | `venv\Scripts\activate` |
+| Deactivate venv | `deactivate` |
 
 ---
 
-## Testing the API Directly (Optional)
+## Deploying to Railway
 
-You can test the backend without the frontend using curl:
+1. Push to `main` branch → Railway auto-deploys
+2. Set env vars in Railway dashboard: `ANTHROPIC_API_KEY`, `JWT_SECRET_KEY`, `DATABASE_URL`, `FLASK_ENV=production`
+3. Add the Railway Redis add-on (optional but recommended)
+4. Leave the Railway **Start Command** field blank — the `Procfile` handles it
 
-```bash
-curl -X POST http://localhost:5001/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "location": "Barcelona, Spain",
-    "duration": "3",
-    "photo_interests": "Architecture",
-    "cuisines": "Traditional Local Cuisine",
-    "attractions": "Historical & Cultural Sites",
-    "budget": "Moderate",
-    "distance": "Up to 15 minutes"
-  }'
-```
-
-Should return JSON with `status: "success"` and HTML/PDF content.
-
----
-
-## Next Steps After Testing
-
-- Want to deploy? See README.md for cloud hosting options
-- Want to add features? The code is documented and extensible
-- Want to monetize? Add payment integration to the form
-
----
-
-## File Locations
-
-All files are in: `/sessions/sleepy-bold-gates/trip-guide-app/`
-
-You can copy this entire folder anywhere on your computer and run it locally!
-
----
-
-**You're all set! Run the 3 commands above and visit http://localhost:5000** 🚀
+See `ARCHITECTURE.md` for full deployment details.
