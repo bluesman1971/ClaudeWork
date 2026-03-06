@@ -35,6 +35,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response as StarletteResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -2075,15 +2076,36 @@ def generate_master_html(location, duration, photos, restaurants=None, attractio
 
 
 # ---------------------------------------------------------------------------
+# No-cache static files (so browser always revalidates JS/CSS after redeploy)
+# ---------------------------------------------------------------------------
+
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles subclass that adds Cache-Control: no-cache to every response.
+
+    Without this, browsers cache the old JS/CSS files after a redeploy and the
+    new HTML loads old module code — causing 'Dining preference' validation
+    errors, missing window.* functions, etc.
+    """
+
+    async def get_response(self, path: str, scope) -> StarletteResponse:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 @app.get('/')
 async def index():
-    return FileResponse(os.path.join(BASE_DIR, 'frontend', 'index.html'))
+    return FileResponse(
+        os.path.join(BASE_DIR, 'frontend', 'index.html'),
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 # Serve frontend JS modules and CSS at /src/*
-app.mount('/src', StaticFiles(directory=os.path.join(BASE_DIR, 'frontend', 'src')), name='frontend-src')
+app.mount('/src', NoCacheStaticFiles(directory=os.path.join(BASE_DIR, 'frontend', 'src')), name='frontend-src')
 
 
 @app.get('/health')
