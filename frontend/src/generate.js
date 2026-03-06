@@ -5,7 +5,7 @@
  * generate → poll → review flow.
  */
 
-import { state, MAX_LOCATION_LENGTH, MIN_DURATION, MAX_DURATION } from './state.js';
+import { state, MAX_LOCATION_LENGTH } from './state.js';
 import { apiFetch } from './api.js';
 import {
     getGroupValues, startProgressAnimation, stopProgressAnimation,
@@ -44,9 +44,26 @@ async function pollJobUntilDone(jobId) {
 document.getElementById('tripForm').addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    if (!state.sectionEnabled.photos && !state.sectionEnabled.dining && !state.sectionEnabled.attractions)
-        return showError('Please enable at least one section (Photography, Dining, or Attractions)');
+    // ── Validate location ─────────────────────────────────────────────────────
+    const location = document.getElementById('location').value.trim();
+    if (!location) return showError('Please enter a destination');
+    if (location.length > MAX_LOCATION_LENGTH)
+        return showError(`Destination must be ${MAX_LOCATION_LENGTH} characters or fewer`);
 
+    // ── Validate dates ────────────────────────────────────────────────────────
+    const startDateVal = document.getElementById('startDate').value;
+    const endDateVal   = document.getElementById('endDate').value;
+    if (!startDateVal || !endDateVal)
+        return showError('Please enter both a start date and end date');
+    const startDate = new Date(startDateVal);
+    const endDate   = new Date(endDateVal);
+    if (endDate < startDate)
+        return showError('End date must be on or after the start date');
+    const durationDays = Math.round((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    if (durationDays > 14)
+        return showError('Trip duration cannot exceed 14 days');
+
+    // ── Validate photo interests ──────────────────────────────────────────────
     if (state.sectionEnabled.photos) {
         const photoInterests = getGroupValues('photo_interests', 'photo_other_text');
         if (!photoInterests.length)
@@ -54,30 +71,8 @@ document.getElementById('tripForm').addEventListener('submit', async (e) => {
         if (document.getElementById('p5').checked && !document.getElementById('photo_other_text').value.trim())
             return showError('Please describe your other photography interest, or uncheck "Other"');
     }
-    if (state.sectionEnabled.dining) {
-        const cuisines = getGroupValues('cuisines', 'cuisine_other_text');
-        if (!cuisines.length)
-            return showError('Please select at least one Dining preference (or turn the section off)');
-        if (document.getElementById('c5').checked && !document.getElementById('cuisine_other_text').value.trim())
-            return showError('Please describe your other dining preference, or uncheck "Other"');
-    }
-    if (state.sectionEnabled.attractions) {
-        const attractionVals = getGroupValues('attractions', 'attr_other_text');
-        if (!attractionVals.length)
-            return showError('Please select at least one Attraction category (or turn the section off)');
-        if (document.getElementById('a5').checked && !document.getElementById('attr_other_text').value.trim())
-            return showError('Please describe your other attraction interest, or uncheck "Other"');
-    }
 
-    const location = document.getElementById('location').value.trim();
-    if (!location) return showError('Please enter a destination');
-    if (location.length > MAX_LOCATION_LENGTH)
-        return showError(`Destination must be ${MAX_LOCATION_LENGTH} characters or fewer`);
-
-    const duration = parseInt(document.getElementById('duration').value, 10);
-    if (isNaN(duration) || duration < MIN_DURATION || duration > MAX_DURATION)
-        return showError(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} days`);
-
+    // ── Validate budget + distance ────────────────────────────────────────────
     const budget   = document.getElementById('budget').value;
     const distance = document.getElementById('distance').value;
     if (!budget || !distance)
@@ -89,27 +84,26 @@ document.getElementById('tripForm').addEventListener('submit', async (e) => {
     document.getElementById('errorMessage').classList.remove('active');
     startProgressAnimation();
 
+    // ── Build payload ─────────────────────────────────────────────────────────
     const payload = {
-        location, duration, budget, distance,
+        location,
+        start_date: startDateVal,
+        end_date:   endDateVal,
+        budget,
+        distance,
         accommodation: document.getElementById('accommodation').value.trim(),
         pre_planned:   document.getElementById('prePlanned').value.trim(),
-        include_photos:      state.sectionEnabled.photos,
-        include_dining:      state.sectionEnabled.dining,
-        include_attractions: state.sectionEnabled.attractions,
-        photos_per_day:      state.countConfig.photos_per_day.value,
-        restaurants_per_day: state.countConfig.restaurants_per_day.value,
-        attractions_per_day: state.countConfig.attractions_per_day.value,
+        photos_per_day: state.countConfig.photos_per_day.value,
         photo_interests: state.sectionEnabled.photos
             ? getGroupValues('photo_interests', 'photo_other_text').join(', ')
             : '',
-        cuisines: state.sectionEnabled.dining
-            ? getGroupValues('cuisines', 'cuisine_other_text').join(', ')
-            : '',
-        attractions: state.sectionEnabled.attractions
-            ? getGroupValues('attractions', 'attr_other_text').join(', ')
-            : '',
     };
 
+    // Gear profile
+    const gearSel = document.getElementById('gearProfileSelect');
+    if (gearSel && gearSel.value) payload.gear_profile_id = parseInt(gearSel.value, 10);
+
+    // Client
     const clientId = document.getElementById('clientSelect').value;
     if (clientId) payload.client_id = parseInt(clientId, 10);
 

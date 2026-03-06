@@ -12,9 +12,7 @@ import { showError } from './form.js';
 export async function generateFinalGuide() {
     if (!state.rawData) return;
 
-    const approvedPhotos      = state.approvalState.photos.map((v, i) => v ? i : -1).filter(i => i >= 0);
-    const approvedRestaurants = state.approvalState.restaurants.map((v, i) => v ? i : -1).filter(i => i >= 0);
-    const approvedAttractions = state.approvalState.attractions.map((v, i) => v ? i : -1).filter(i => i >= 0);
+    const approvedPhotos = state.approvalState.photos.map((v, i) => v ? i : -1).filter(i => i >= 0);
 
     document.getElementById('reviewContainer').classList.remove('active');
     document.getElementById('finalizing').classList.add('active');
@@ -24,11 +22,9 @@ export async function generateFinalGuide() {
         const response = await apiFetch('/finalize', {
             method: 'POST',
             body: JSON.stringify({
-                session_id:           state.rawData.session_id,
-                trip_id:              state.rawData.trip_id || null,
-                approved_photos:      approvedPhotos,
-                approved_restaurants: approvedRestaurants,
-                approved_attractions: approvedAttractions,
+                session_id:      state.rawData.session_id,
+                trip_id:         state.rawData.trip_id || null,
+                approved_photos: approvedPhotos,
             }),
         });
         const result = await response.json();
@@ -53,10 +49,9 @@ export function reviseTrip() {
 
 export function displayResults(result) {
     document.getElementById('resultTitle').textContent = `${result.location} Guide`;
-    const parts = [`${result.duration} days`];
-    if (result.photo_count    > 0) parts.push(`${result.photo_count} photo spots`);
-    if (result.restaurant_count > 0) parts.push(`${result.restaurant_count} restaurants`);
-    if (result.attraction_count > 0) parts.push(`${result.attraction_count} attractions`);
+    const parts = [];
+    if (result.duration)     parts.push(`${result.duration} days`);
+    if (result.photo_count > 0) parts.push(`${result.photo_count} photo spots`);
     document.getElementById('resultSubtitle').textContent = parts.join(' · ');
     document.getElementById('previewFrame').srcdoc = result.html;
     window.currentLocation = result.location;

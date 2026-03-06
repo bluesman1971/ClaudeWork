@@ -73,44 +73,30 @@ export async function loadTrip(tripId) {
         if (trip.status === 'finalized' && trip.final_html) {
             resetForm();
             state.rawData = {
-                session_id:       trip.session_id || '',
-                trip_id:          trip.id,
-                location:         trip.location,
-                duration:         trip.duration,
-                photo_count:      trip.raw_photos.length,
-                restaurant_count: trip.raw_restaurants.length,
-                attraction_count: trip.raw_attractions.length,
-                photos:           trip.raw_photos,
-                restaurants:      trip.raw_restaurants,
-                attractions:      trip.raw_attractions,
+                session_id:  trip.session_id || '',
+                trip_id:     trip.id,
+                location:    trip.location,
+                duration:    trip.duration,
+                photo_count: trip.raw_photos.length,
+                photos:      trip.raw_photos,
             };
-            const pIdx = trip.approved_photo_indices      || trip.raw_photos.map((_, i) => i);
-            const rIdx = trip.approved_restaurant_indices || trip.raw_restaurants.map((_, i) => i);
-            const aIdx = trip.approved_attraction_indices || trip.raw_attractions.map((_, i) => i);
-            state.approvalState.photos      = trip.raw_photos.map((_, i) => pIdx.includes(i));
-            state.approvalState.restaurants = trip.raw_restaurants.map((_, i) => rIdx.includes(i));
-            state.approvalState.attractions = trip.raw_attractions.map((_, i) => aIdx.includes(i));
+            const pIdx = trip.approved_photo_indices || trip.raw_photos.map((_, i) => i);
+            state.approvalState.photos = trip.raw_photos.map((_, i) => pIdx.includes(i));
             displayResults({
-                html:             trip.final_html,
-                location:         trip.location,
-                duration:         trip.duration,
-                photo_count:      pIdx.length,
-                restaurant_count: rIdx.length,
-                attraction_count: aIdx.length,
+                html:        trip.final_html,
+                location:    trip.location,
+                duration:    trip.duration,
+                photo_count: pIdx.length,
             });
         } else {
             resetForm();
             showReviewScreen({
-                session_id:       trip.session_id || '',
-                trip_id:          trip.id,
-                location:         trip.location,
-                duration:         trip.duration,
-                photos:           trip.raw_photos,
-                restaurants:      trip.raw_restaurants,
-                attractions:      trip.raw_attractions,
-                photo_count:      trip.raw_photos.length,
-                restaurant_count: trip.raw_restaurants.length,
-                attraction_count: trip.raw_attractions.length,
+                session_id:  trip.session_id || '',
+                trip_id:     trip.id,
+                location:    trip.location,
+                duration:    trip.duration,
+                photos:      trip.raw_photos,
+                photo_count: trip.raw_photos.length,
             });
         }
         document.getElementById('tripsPanelToggle').classList.remove('open');

@@ -3,14 +3,18 @@
  *
  * Responsibilities:
  *  1. Import all modules (side-effect: generate.js attaches the form submit listener)
- *  2. Listen for auth events fired by api.js and wire up client/trip refresh
+ *  2. Listen for auth events fired by api.js and wire up client/trip/gear refresh
  *  3. Expose functions that are referenced by inline onclick handlers in the HTML
  *     (required because ES modules are scoped — not automatically global)
  *  4. Bootstrap: call checkAuth() on page load
  */
 
 import { checkAuth, handleLogin, handleLogout } from './api.js';
-import { refreshClientList, openClientModal, closeClientModal, saveNewClient } from './clients.js';
+import {
+    refreshClientList, openClientModal, closeClientModal, saveNewClient,
+    refreshGearProfiles, openGearProfileModal, closeGearProfileModal,
+    saveGearProfile, deleteGearProfile, openGearPanel, closeGearPanel,
+} from './clients.js';
 import { loadSavedTrips, toggleTripsPanel, openTripsPanel, loadTrip } from './trips.js';
 import {
     toggleItem, bulkSelect, toggleEditPanel, saveItemEdit, replaceItem,
@@ -26,6 +30,7 @@ import './generate.js';  // attaches the form submit listener (side-effect impor
 document.addEventListener('auth:success', () => {
     refreshClientList();
     loadSavedTrips();
+    refreshGearProfiles();
 });
 
 document.addEventListener('auth:logout', () => {
@@ -46,6 +51,15 @@ window.openClientModal   = openClientModal;
 window.closeClientModal  = closeClientModal;
 window.saveNewClient     = saveNewClient;
 window.refreshClientList = refreshClientList;
+
+// Gear profiles
+window.refreshGearProfiles    = refreshGearProfiles;
+window.openGearProfileModal   = openGearProfileModal;
+window.closeGearProfileModal  = closeGearProfileModal;
+window.saveGearProfile        = saveGearProfile;
+window.deleteGearProfile      = deleteGearProfile;
+window.openGearPanel          = openGearPanel;
+window.closeGearPanel         = closeGearPanel;
 
 // Trips
 window.toggleTripsPanel  = toggleTripsPanel;

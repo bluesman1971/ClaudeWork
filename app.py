@@ -56,7 +56,7 @@ from prompts import (
     build_photo_scout_user_prompt,
 )
 from redis_client import get_redis
-from schemas import FinalizeRequest, GenerateRequest, ReplaceRequest
+from schemas import FinalizeRequest, GenerateRequest, GearProfileCreate, GearProfileUpdate, ReplaceRequest
 from tool_schemas import PHOTO_TOOL
 from trips import trips_router
 
@@ -2089,6 +2089,93 @@ app.mount('/src', StaticFiles(directory=os.path.join(BASE_DIR, 'frontend', 'src'
 @app.get('/health')
 async def health():
     return {'status': 'ok', 'message': f'Trip Guide API is running on {SCOUT_MODEL_LABEL}'}
+
+
+# ── Gear profiles ─────────────────────────────────────────────────────────────
+
+@app.get('/gear-profiles')
+async def list_gear_profiles(
+    current_user: StaffUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all gear profiles belonging to the authenticated staff user."""
+    profiles = (
+        db.query(GearProfile)
+          .filter(GearProfile.staff_user_id == current_user.id)
+          .order_by(GearProfile.name)
+          .all()
+    )
+    return {'gear_profiles': [p.to_dict() for p in profiles]}
+
+
+@app.post('/gear-profiles')
+async def create_gear_profile(
+    body: GearProfileCreate,
+    current_user: StaffUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new gear profile for the authenticated staff user."""
+    import json as _json
+    profile = GearProfile(
+        staff_user_id = current_user.id,
+        name          = body.name,
+        camera_type   = body.camera_type,
+        lenses        = _json.dumps(body.lenses),
+        has_tripod    = body.has_tripod,
+        has_filters   = _json.dumps(body.has_filters),
+        has_gimbal    = body.has_gimbal,
+        notes         = body.notes,
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return {'gear_profile': profile.to_dict()}
+
+
+@app.put('/gear-profiles/{profile_id}')
+async def update_gear_profile(
+    profile_id: int,
+    body: GearProfileUpdate,
+    current_user: StaffUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update an existing gear profile owned by the authenticated staff user."""
+    import json as _json
+    profile = (
+        db.query(GearProfile)
+          .filter(GearProfile.id == profile_id, GearProfile.staff_user_id == current_user.id)
+          .first()
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail='Gear profile not found')
+    update_data = body.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        if field in ('lenses', 'has_filters') and isinstance(value, list):
+            setattr(profile, field, _json.dumps(value))
+        else:
+            setattr(profile, field, value)
+    db.commit()
+    db.refresh(profile)
+    return {'gear_profile': profile.to_dict()}
+
+
+@app.delete('/gear-profiles/{profile_id}')
+async def delete_gear_profile(
+    profile_id: int,
+    current_user: StaffUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a gear profile owned by the authenticated staff user."""
+    profile = (
+        db.query(GearProfile)
+          .filter(GearProfile.id == profile_id, GearProfile.staff_user_id == current_user.id)
+          .first()
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail='Gear profile not found')
+    db.delete(profile)
+    db.commit()
+    return {'ok': True}
 
 
 @app.post('/generate')

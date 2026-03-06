@@ -4,6 +4,73 @@ A record of significant changes to the app, newest first. Each entry covers what
 
 ---
 
+## [Phase 5] Test suite — 2026-03-05
+
+### What changed
+Full pytest test suite added. 59 tests across 5 modules, 0 failures.
+
+### New files
+
+| File | Description |
+|---|---|
+| `requirements.txt` | Added `pytest==8.3.5`, `pytest-asyncio==0.25.3`, `pytest-cov==6.0.0` |
+| `pytest.ini` | `asyncio_mode=auto`, `asyncio_default_fixture_loop_scope=function`, `testpaths=tests` |
+| `tests/__init__.py` | Empty package marker |
+| `tests/conftest.py` | Shared fixtures: StaticPool SQLite, `override_get_db`, `test_user`, `anon_client`, `auth_client` |
+| `tests/test_auth.py` | 8 tests: health, 401/403 guards, login success/fail/validation, CSRF |
+| `tests/test_generate.py` | 10 tests: job_id response, date/duration validation, job polling, auth guards |
+| `tests/test_ephemeris.py` | 19 tests: Barcelona solstice, London equinox, moon phase helpers, format_ephemeris_block |
+| `tests/test_clients.py` | 12 tests: gear profile full CRUD cycle, cross-user isolation (404), invalid camera_type (422), auth guards |
+| `tests/test_finalize.py` | 7 tests: session injection strategy, subset photo approval, HTML output validation, auth guards |
+
+### Architecture notes
+- **StaticPool** (SQLAlchemy) forces all test sessions to share one in-memory SQLite connection → data visible across `override_get_db` and `db_session` fixtures without commits being lost
+- **No Redis** needed — app auto-falls back to in-memory `_session_store` / `_jobs` dicts
+- **`PLACES_VERIFY_ENABLED = False`** (no `GOOGLE_PLACES_API_KEY`) — all Places API / map prefetch paths are bypassed
+- **`app._http_client` stubbed** with `httpx.AsyncClient()` in `auth_client` fixture since `ASGITransport` does not invoke the FastAPI lifespan context manager
+- **Background scout task** (`asyncio.create_task` in `/generate`) runs, fails without Claude API key, and marks the job `failed` — test only asserts the immediate `{job_id}` response
+
+---
+
+## [Phase 10] Frontend pivot — Photography UI — 2026-03-05
+
+### What changed
+Full frontend update to match the Phase 9 backend pivot. The form, review screen, and supporting modules are now photography-only. Dining and attractions are removed throughout. Gear profile management is fully wired up.
+
+### Modified frontend files
+
+| File | Key changes |
+|---|---|
+| `frontend/src/state.js` | Removed `restaurants`/`attractions` from `approvalState`, `sectionEnabled`, `countConfig`. Added `_gearProfiles: []` and `gear_profile_id: null`. |
+| `frontend/src/form.js` | Progress animation: 2 steps only (`step-photos`, `step-building`). `resetForm()` strips all dining/attraction resets; clears `gearProfileSelect`. Removed `cuisine_other_text`/`attr_other_text`/`attr_other_text_wrapper` handling. |
+| `frontend/src/generate.js` | Date validation replaces duration integer validation. Payload sends `start_date`/`end_date` and `gear_profile_id`; removes `include_dining`, `include_attractions`, `cuisines`, `restaurants_per_day`, `attractions_per_day`. |
+| `frontend/src/review.js` | `showReviewScreen()` no longer initialises restaurants/attractions arrays. `buildReviewItem()` completely rewritten as a vertical Kelby card: row (toggle + name + shoot_window tag + distance tag + actions + Google Earth button + status dot) → gear badge row → 4 Kelby sections (Shot / Setup / Settings / Reality Check). `saveItemEdit()` / `replaceItem()` now photos-only. |
+| `frontend/src/finalize.js` | Payload sends only `approved_photos`; removes `approved_restaurants` and `approved_attractions`. `displayResults()` subtitle shows `photo_count` only. |
+| `frontend/src/trips.js` | `loadTrip()` no longer reads `raw_restaurants`/`raw_attractions` or sets `approvalState.restaurants`/`.attractions`. |
+| `frontend/src/clients.js` | Added full gear profile CRUD: `refreshGearProfiles()` (GET /gear-profiles), `openGearProfileModal(id)`, `closeGearProfileModal()`, `saveGearProfile(e)` (POST or PUT), `deleteGearProfile(id)` (DELETE), `openGearPanel()`, `closeGearPanel()`. `_populateGearSelector()` fills `#gearProfileSelect`. `_renderGearProfileList()` renders gear rows in the side panel. |
+| `frontend/src/main.js` | Added imports and `window.*` exports for all gear profile functions. Added `refreshGearProfiles()` call to `auth:success` listener. |
+| `frontend/index.html` | Removed `#section-dining` and `#section-attractions` blocks. Replaced `#duration` integer input with `#startDate` / `#endDate` date pickers in a 3-column field row. Added gear profile selector (`#gearProfileSelect`) with "Manage Profiles" and "+ New" actions. Added gear profile CRUD modal (`#gearProfileModal`) and slide-in panel (`#gearPanel`). Removed `step-restaurants` and `step-attractions` from loading progress. Updated hero headline and dek to photography focus. |
+| `frontend/src/styles/main.css` | New: `.review-item--photo` (vertical card layout), `.review-item-row` (toggle/name/tags/actions row), `.kelby-gear-row` (gear badges strip), `.gear-badge`, `.kelby-sections`, `.kelby-section`, `.kelby-label`, `.kelby-text`, `.review-earth-btn` (Google Earth link button), `.gear-panel-overlay`/`.gear-panel`/`.gear-panel-*` (slide-in panel), `.gear-profile-row`/`.gear-profile-*` (panel rows), `.gear-action-btn`, `.modal-box--wide`, `.modal-hint`, `.modal-field--checkbox`, `.checkbox-label`, `.field-row--3col`. |
+
+### Modified backend file
+
+| File | Key changes |
+|---|---|
+| `app.py` | Added `GET /gear-profiles`, `POST /gear-profiles`, `PUT /gear-profiles/{profile_id}`, `DELETE /gear-profiles/{profile_id}` endpoints. Each endpoint requires auth via `Depends(get_current_user)` and scopes queries to `staff_user_id == current_user.id`. JSON array fields (`lenses`, `has_filters`) serialised with `json.dumps`. Added `GearProfileCreate`, `GearProfileUpdate` to the `from schemas import …` line. |
+
+### URL bug fixes (applied in same session, between Phase 9 and 10)
+
+| Bug | Fix |
+|---|---|
+| **Google Maps wrong building** | Changed coordinate URL from `/maps/search/{lat},{lng}` (nearest-place search) to `?q={lat},{lng}` (exact pin drop). |
+| **Google Earth not zoomed in** | Fixed two bugs: (1) spurious `35y` parameter removed — correct Google Earth Web URL format is `@lat,lng,altA,rangeD,tiltT,headingH,rollR` (5 params, no `y`); (2) range changed from `800d` (800 m, neighbourhood view) to `150d` (150 m, building/street level). |
+
+### Migration notes
+- No database changes. All schema changes were in Phase 8 (Phase 2 of pivot plan).
+- Existing finalized trips load correctly — `trips.js` reads `raw_photos` which is always present; `raw_restaurants`/`raw_attractions` gracefully default to `[]` from the backend `to_dict()`.
+
+---
+
 ## [Phase 9] Backend pivot — Photography assistant — 2026-03-05
 
 ### What changed

@@ -1,12 +1,12 @@
 /**
- * form.js — Form controls, section toggles, progress animation, and shared UI utils.
+ * form.js — Form controls, section toggle, progress animation, and shared UI utils.
  *
  * Also contains resetForm() and showError() which are used across modules.
  */
 
 import { state } from './state.js';
 
-// ── Section toggles ──────────────────────────────────────────────────────────
+// ── Section toggle (photos only) ─────────────────────────────────────────────
 
 export function toggleSection(key) {
     state.sectionEnabled[key] = !state.sectionEnabled[key];
@@ -24,7 +24,7 @@ export function toggleSection(key) {
     }
 }
 
-// ── Count steppers ───────────────────────────────────────────────────────────
+// ── Count stepper ─────────────────────────────────────────────────────────────
 
 export function adjustCount(id, delta) {
     const cfg = state.countConfig[id];
@@ -56,21 +56,19 @@ export function getGroupValues(name, otherTextId) {
 
 export function buildProgressStepIds() {
     const steps = [];
-    if (state.sectionEnabled.photos)      steps.push('step-photos');
-    if (state.sectionEnabled.dining)      steps.push('step-restaurants');
-    if (state.sectionEnabled.attractions) steps.push('step-attractions');
+    if (state.sectionEnabled.photos) steps.push('step-photos');
     steps.push('step-building');
     return steps;
 }
 
 export function startProgressAnimation() {
     const steps = buildProgressStepIds();
-    ['step-photos', 'step-restaurants', 'step-attractions', 'step-building']
-        .forEach(id => {
-            const el = document.getElementById(id);
-            el.className = 'progress-step';
-            el.style.display = steps.includes(id) ? '' : 'none';
-        });
+    ['step-photos', 'step-building'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.className = 'progress-step';
+        el.style.display = steps.includes(id) ? '' : 'none';
+    });
     let current = 0;
     state.progressInterval = setInterval(() => {
         if (current < steps.length) {
@@ -85,10 +83,10 @@ export function startProgressAnimation() {
 export function stopProgressAnimation(success) {
     clearInterval(state.progressInterval);
     state.progressInterval = null;
-    ['step-photos', 'step-restaurants', 'step-attractions', 'step-building'].forEach(id => {
+    ['step-photos', 'step-building'].forEach(id => {
         const el = document.getElementById(id);
-        if (el.style.display !== 'none')
-            el.className = success ? 'progress-step done' : 'progress-step';
+        if (!el || el.style.display === 'none') return;
+        el.className = success ? 'progress-step done' : 'progress-step';
     });
 }
 
@@ -111,25 +109,28 @@ export function resetForm() {
     document.getElementById('tripForm').reset();
     document.getElementById('accommodation').value = '';
     document.getElementById('prePlanned').value = '';
-    // Reset other text inputs
-    ['photo_other_text', 'cuisine_other_text', 'attr_other_text'].forEach(id => {
-        document.getElementById(id).value = '';
-        document.getElementById(id + '_wrapper').classList.remove('visible');
+    // Reset "Other" text inputs for photo interests
+    ['photo_other_text'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.value = ''; }
+        const wrapper = document.getElementById(id + '_wrapper');
+        if (wrapper) wrapper.classList.remove('visible');
     });
-    // Reset section toggles to On
-    ['photos', 'dining', 'attractions'].forEach(key => {
-        if (!state.sectionEnabled[key]) toggleSection(key);
-    });
-    // Reset counts to defaults
-    [['photos_per_day', 3], ['restaurants_per_day', 3], ['attractions_per_day', 4]]
-        .forEach(([id, def]) => {
-            state.countConfig[id].value = def;
-            document.getElementById(id + '_display').textContent = def;
-            document.getElementById(id).value = def;
-        });
+    // Reset section toggle to On
+    if (!state.sectionEnabled.photos) toggleSection('photos');
+    // Reset photo count to default
+    state.countConfig.photos_per_day.value = 3;
+    const disp = document.getElementById('photos_per_day_display');
+    const inp  = document.getElementById('photos_per_day');
+    if (disp) disp.textContent = 3;
+    if (inp)  inp.value = 3;
+    // Clear gear profile selection
+    state.gear_profile_id = null;
+    const gearSel = document.getElementById('gearProfileSelect');
+    if (gearSel) gearSel.value = '';
     // Clear review state
     state.rawData = null;
-    state.approvalState = { photos: [], restaurants: [], attractions: [] };
+    state.approvalState = { photos: [] };
     document.getElementById('reviewBody').innerHTML = '';
     document.getElementById('reviewContainer').classList.remove('active');
     document.getElementById('finalizing').classList.remove('active');

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trip Master — Bespoke Travel Guides</title>
+    <title>Trip Master — Photography Guide Builder</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/src/styles/main.css">
@@ -96,6 +96,84 @@
         </div>
     </div>
 
+    <!-- GEAR PROFILE MODAL (create / edit gear vault) -->
+    <div class="modal-overlay" id="gearProfileModal">
+        <div class="modal-box modal-box--wide">
+            <button class="modal-close" onclick="closeGearProfileModal()" title="Close">&times;</button>
+            <div class="modal-title" id="gearModalTitle">New Gear Profile</div>
+            <form id="gearProfileForm" onsubmit="saveGearProfile(event)">
+                <input type="hidden" id="gearProfileId">
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Profile Name *</label>
+                        <input type="text" id="gpName" placeholder="e.g., Travel Kit, Full Studio" required>
+                    </div>
+                    <div class="modal-field">
+                        <label>Camera Body *</label>
+                        <select id="gpCameraType" required>
+                            <option value="">Select…</option>
+                            <option value="full_frame_mirrorless">Full-frame mirrorless</option>
+                            <option value="apsc_mirrorless">APS-C mirrorless</option>
+                            <option value="apsc_dslr">APS-C DSLR</option>
+                            <option value="full_frame_dslr">Full-frame DSLR</option>
+                            <option value="smartphone">Smartphone</option>
+                            <option value="film_35mm">35mm film</option>
+                            <option value="film_medium_format">Medium-format film</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field">
+                        <label>Lenses <span class="modal-hint">one per line, e.g. 16-35mm f/2.8</span></label>
+                        <textarea id="gpLenses" rows="4" placeholder="16-35mm f/2.8&#10;50mm f/1.8&#10;70-200mm f/4"></textarea>
+                    </div>
+                    <div class="modal-field">
+                        <label>Filters <span class="modal-hint">one per line, e.g. 6-stop ND</span></label>
+                        <textarea id="gpFilters" rows="4" placeholder="6-stop ND&#10;Polarizer&#10;Graduated ND"></textarea>
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field modal-field--checkbox">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gpHasTripod">
+                            Tripod in kit
+                        </label>
+                    </div>
+                    <div class="modal-field modal-field--checkbox">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gpHasGimbal">
+                            Gimbal / stabiliser
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-field">
+                    <label>Notes <span class="modal-hint">optional</span></label>
+                    <textarea id="gpNotes" rows="2" placeholder="e.g., 50mm is a macro lens, lightweight travel tripod only"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="modal-btn" onclick="closeGearProfileModal()">Cancel</button>
+                    <button type="submit" class="modal-btn primary" id="saveGearProfileBtn">Save Profile</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- GEAR PANEL (slide-in panel to manage gear profiles) -->
+    <div class="gear-panel-overlay" id="gearPanel">
+        <div class="gear-panel">
+            <div class="gear-panel-header">
+                <div class="gear-panel-title">Gear Profiles</div>
+                <button class="gear-panel-close" onclick="closeGearPanel()" title="Close">&times;</button>
+            </div>
+            <div class="gear-panel-body">
+                <div id="gearProfileList"><div class="gear-list-empty">Loading…</div></div>
+            </div>
+            <div class="gear-panel-footer">
+                <button class="modal-btn primary" onclick="openGearProfileModal(null)">+ New Profile</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MASTHEAD -->
     <header class="masthead">
         <div class="masthead-brand">Trip Master</div>
@@ -104,15 +182,15 @@
             <button class="masthead-btn" onclick="openTripsPanel()" title="View saved trips">Saved Trips</button>
             <button class="masthead-btn" onclick="handleLogout()">Sign Out</button>
         </div>
-        <div class="masthead-issue" id="mastheadIssue">AI Travel Intelligence &middot; Est. 2025</div>
+        <div class="masthead-issue" id="mastheadIssue">Photography Guide Builder &middot; Est. 2025</div>
     </header>
 
     <!-- HERO -->
     <section class="hero-spread">
         <div class="hero-text">
-            <p class="kicker">Bespoke Travel Guides</p>
-            <h1 class="hero-headline">The world<br>is <em>yours</em><br>to explore.</h1>
-            <p class="hero-dek">Photography locations, curated restaurants, and the attractions worth your time — all generated in under a minute, tailored to you.</p>
+            <p class="kicker">Bespoke Photography Guides</p>
+            <h1 class="hero-headline">The world<br>is <em>yours</em><br>to shoot.</h1>
+            <p class="hero-dek">Kelby-style shoot plans with exact gear calls, golden hour windows, and reality-check logistics — generated in under a minute, tailored to your kit.</p>
             <button class="hero-cta" onclick="document.querySelector('.form-wrap').scrollIntoView({behavior:'smooth'})">
                 Build your guide
                 <span class="hero-cta-arrow"></span>
@@ -139,8 +217,8 @@
         <div class="form-header">
             <div class="form-issue-number">01</div>
             <div class="form-title-group">
-                <h2>Plan Your Journey</h2>
-                <p>Tell us about your trip and we'll craft your guide.</p>
+                <h2>Plan Your Shoot</h2>
+                <p>Tell us about your trip and we'll craft your photography guide.</p>
             </div>
         </div>
 
@@ -174,14 +252,34 @@
                 </select>
             </div>
 
-            <div class="field-row">
+            <!-- Gear profile selector -->
+            <div class="client-field-wrap">
+                <div class="client-field-label">
+                    <span>Gear Profile <span style="font-weight:300;font-size:0.75em;color:var(--rule)">(unlocks tailored settings &amp; setup advice)</span></span>
+                    <div class="client-field-actions">
+                        <button type="button" class="client-action-btn" onclick="openGearPanel()">Manage Profiles</button>
+                        <span style="color:var(--rule);font-size:0.62rem;">/</span>
+                        <button type="button" class="client-action-btn" onclick="openGearProfileModal(null)">+ New</button>
+                    </div>
+                </div>
+                <select id="gearProfileSelect" class="client-select">
+                    <option value="">— No gear profile —</option>
+                </select>
+            </div>
+
+            <!-- Destination + Dates -->
+            <div class="field-row field-row--3col">
                 <div class="field">
                     <label for="location">Destination</label>
                     <input type="text" id="location" placeholder="e.g., Barcelona, Spain" required>
                 </div>
                 <div class="field">
-                    <label for="duration">Duration (1–14 days)</label>
-                    <input type="number" id="duration" min="1" max="14" value="3" required>
+                    <label for="startDate">Start Date</label>
+                    <input type="date" id="startDate" required>
+                </div>
+                <div class="field">
+                    <label for="endDate">End Date</label>
+                    <input type="date" id="endDate" required>
                 </div>
             </div>
 
@@ -195,11 +293,11 @@
             <div class="field-row">
                 <div class="field" style="grid-column: 1 / -1;">
                     <label for="prePlanned">Already Planned or Must-See <span style="font-weight:300;text-transform:none;letter-spacing:0;font-size:0.75em;color:var(--rule)">(optional — scouts will work around these and won't duplicate them)</span></label>
-                    <input type="text" id="prePlanned" placeholder="e.g., Dinner at Tickets on Day 2, Sagrada Família visit booked for Day 1 morning">
+                    <input type="text" id="prePlanned" placeholder="e.g., Sagrada Família visit booked for Day 1 morning, staying near Gothic Quarter">
                 </div>
             </div>
 
-            <!-- Photography -->
+            <!-- Photography Interests -->
             <div class="cat-section" id="section-photos">
                 <div class="cat-header">
                     <span class="cat-number">I</span>
@@ -227,70 +325,6 @@
                         <button type="button" class="count-btn" onclick="adjustCount('photos_per_day', 1)">+</button>
                     </div>
                     <input type="hidden" id="photos_per_day" value="3">
-                    <span class="count-hint">per day</span>
-                </div>
-            </div>
-
-            <!-- Dining -->
-            <div class="cat-section" id="section-dining">
-                <div class="cat-header">
-                    <span class="cat-number">II</span>
-                    <span class="cat-title">Dining Preferences</span>
-                    <div class="section-toggle on" id="toggle-dining" onclick="toggleSection('dining')" title="Enable or disable this section">
-                        <span class="section-toggle-label" id="toggle-dining-label">On</span>
-                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
-                    </div>
-                </div>
-                <div class="pill-grid">
-                    <div class="pill-item"><input type="checkbox" id="c1" name="cuisines" value="Traditional Local Cuisine" checked><label for="c1">Local Cuisine</label></div>
-                    <div class="pill-item"><input type="checkbox" id="c2" name="cuisines" value="Street Food & Casual"><label for="c2">Street Food</label></div>
-                    <div class="pill-item"><input type="checkbox" id="c3" name="cuisines" value="Fine Dining & Upscale"><label for="c3">Fine Dining</label></div>
-                    <div class="pill-item"><input type="checkbox" id="c4" name="cuisines" value="Fusion & Modern"><label for="c4">Fusion & Modern</label></div>
-                    <div class="pill-item"><input type="checkbox" id="c5" name="cuisines" value="other" onchange="toggleOther(this,'cuisine_other_text')"><label for="c5">Other</label></div>
-                </div>
-                <div class="other-reveal" id="cuisine_other_text_wrapper">
-                    <input type="text" id="cuisine_other_text" placeholder="e.g., Thai, Lebanese, Vegan...">
-                </div>
-                <div class="count-row">
-                    <span class="count-label">Restaurants per day</span>
-                    <div class="count-stepper">
-                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', -1)">−</button>
-                        <span class="count-value" id="restaurants_per_day_display">3</span>
-                        <button type="button" class="count-btn" onclick="adjustCount('restaurants_per_day', 1)">+</button>
-                    </div>
-                    <input type="hidden" id="restaurants_per_day" value="3">
-                    <span class="count-hint">per day</span>
-                </div>
-            </div>
-
-            <!-- Attractions -->
-            <div class="cat-section" id="section-attractions">
-                <div class="cat-header">
-                    <span class="cat-number">III</span>
-                    <span class="cat-title">Attraction Categories</span>
-                    <div class="section-toggle on" id="toggle-attractions" onclick="toggleSection('attractions')" title="Enable or disable this section">
-                        <span class="section-toggle-label" id="toggle-attractions-label">On</span>
-                        <div class="toggle-track"><div class="toggle-thumb"></div></div>
-                    </div>
-                </div>
-                <div class="pill-grid">
-                    <div class="pill-item"><input type="checkbox" id="a1" name="attractions" value="Historical & Cultural Sites"><label for="a1">Historical & Cultural</label></div>
-                    <div class="pill-item"><input type="checkbox" id="a2" name="attractions" value="Art, Museums & Galleries"><label for="a2">Art & Museums</label></div>
-                    <div class="pill-item"><input type="checkbox" id="a3" name="attractions" value="Shopping & Neighborhoods"><label for="a3">Shopping & Districts</label></div>
-                    <div class="pill-item"><input type="checkbox" id="a4" name="attractions" value="Nature, Parks & Gardens"><label for="a4">Nature & Parks</label></div>
-                    <div class="pill-item"><input type="checkbox" id="a5" name="attractions" value="other" onchange="toggleOther(this,'attr_other_text')"><label for="a5">Other</label></div>
-                </div>
-                <div class="other-reveal" id="attr_other_text_wrapper">
-                    <input type="text" id="attr_other_text" placeholder="e.g., Wineries, Beaches, Live Music...">
-                </div>
-                <div class="count-row">
-                    <span class="count-label">Attractions per day</span>
-                    <div class="count-stepper">
-                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', -1)">−</button>
-                        <span class="count-value" id="attractions_per_day_display">4</span>
-                        <button type="button" class="count-btn" onclick="adjustCount('attractions_per_day', 1)">+</button>
-                    </div>
-                    <input type="hidden" id="attractions_per_day" value="4">
                     <span class="count-hint">per day</span>
                 </div>
             </div>
@@ -331,11 +365,9 @@
 
     <!-- LOADING -->
     <div class="loading" id="loading">
-        <p class="loading-headline">Assembling your<br>perfect itinerary&hellip;</p>
+        <p class="loading-headline">Planning your<br>shoots&hellip;</p>
         <div class="progress-steps">
             <div class="progress-step" id="step-photos">📸 Photo Scout</div>
-            <div class="progress-step" id="step-restaurants">🍽 Restaurant Scout</div>
-            <div class="progress-step" id="step-attractions">🏛 Attraction Scout</div>
             <div class="progress-step" id="step-building">🔍 Verifying Locations</div>
         </div>
         <p id="loadingMessage" class="loading-status"></p>
@@ -362,7 +394,7 @@
     <!-- FINALIZING STATE -->
     <div class="finalizing" id="finalizing">
         <p class="loading-headline">Crafting your<br>final guide&hellip;</p>
-        <p class="finalizing-sub">Generating maps &amp; building your curated guide</p>
+        <p class="finalizing-sub">Generating maps &amp; building your photography guide</p>
     </div>
 
     <!-- RESULTS -->

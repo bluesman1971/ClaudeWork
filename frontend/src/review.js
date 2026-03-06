@@ -1,5 +1,8 @@
 /**
  * review.js — Review screen: render, toggle, inline-edit, replace.
+ *
+ * Photo items render in a Kelby-style 4-section card:
+ *   The Shot / The Setup / The Settings / The Reality Check
  */
 
 import { state } from './state.js';
@@ -17,25 +20,17 @@ export function esc(str) {
 
 export function showReviewScreen(result) {
     state.rawData = result;
-    result.photos      = Array.isArray(result.photos)      ? result.photos      : [];
-    result.restaurants = Array.isArray(result.restaurants)  ? result.restaurants : [];
-    result.attractions = Array.isArray(result.attractions)  ? result.attractions : [];
-    state.approvalState.photos      = result.photos.map(() => true);
-    state.approvalState.restaurants = result.restaurants.map(() => true);
-    state.approvalState.attractions = result.attractions.map(() => true);
+    result.photos = Array.isArray(result.photos) ? result.photos : [];
+    state.approvalState.photos = result.photos.map(() => true);
 
     document.getElementById('reviewTitle').textContent = `Review — ${result.location}`;
     document.getElementById('reviewSubtitle').textContent =
-        `${result.photo_count + result.restaurant_count + result.attraction_count} suggestions · toggle off anything you don't want in the final guide`;
+        `${result.photo_count} photo locations · toggle off anything you don't want in the final guide`;
 
     const body = document.getElementById('reviewBody');
     body.innerHTML = '';
     if (result.photos.length)
-        body.appendChild(buildReviewSection('photos',      result.photos,      'Photography', 'Locations & photo spots'));
-    if (result.restaurants.length)
-        body.appendChild(buildReviewSection('restaurants', result.restaurants, 'Dining',      'Restaurants & cafés'));
-    if (result.attractions.length)
-        body.appendChild(buildReviewSection('attractions', result.attractions, 'Attractions', 'Things to see & do'));
+        body.appendChild(buildReviewSection('photos', result.photos, 'Photography Shoots', 'Kelby-style location guides'));
 
     if (Array.isArray(result.warnings) && result.warnings.length > 0) {
         const warnHtml = result.warnings.map(msg => `
@@ -101,40 +96,70 @@ export function buildReviewItem(type, item, idx) {
     wrapper.id = `review-wrapper-${type}-${idx}`;
 
     const row = document.createElement('div');
-    row.className = 'review-item';
+    row.className = 'review-item review-item--photo';
     row.id = `review-item-${type}-${idx}`;
 
     const isVerified = item._status === 'OPERATIONAL';
     const dotClass   = isVerified ? 'verified' : 'unverified';
 
+    // ── Tags: shoot window + distance ──────────────────────────────────────────
     let tags = '';
-    if (type === 'photos') {
-        if (item.time)  tags += `<span class="review-item-tag accent">${esc(item.time)}</span>`;
-        const addrPart = (item.address || '').split(',')[0].trim();
-        if (addrPart)   tags += `<span class="review-item-tag">${esc(addrPart)}</span>`;
-    } else if (type === 'restaurants') {
-        if (item.meal_type) tags += `<span class="review-item-tag accent">${esc(item.meal_type)}</span>`;
-        if (item.cuisine)   tags += `<span class="review-item-tag">${esc(item.cuisine)}</span>`;
-        if (item.price)     tags += `<span class="review-item-tag">${esc(item.price)}</span>`;
-    } else {
-        if (item.time)     tags += `<span class="review-item-tag accent">${esc(item.time)}</span>`;
-        if (item.category) tags += `<span class="review-item-tag">${esc(item.category)}</span>`;
-        if (item.admission && item.admission !== 'Free')
-                           tags += `<span class="review-item-tag">${esc(item.admission)}</span>`;
+    if (item.shoot_window)
+        tags += `<span class="review-item-tag accent">${esc(item.shoot_window)}</span>`;
+    if (item.distance_from_accommodation && item.distance_from_accommodation !== 'N/A')
+        tags += `<span class="review-item-tag">${esc(item.distance_from_accommodation)}</span>`;
+
+    // ── Required gear badges ───────────────────────────────────────────────────
+    let gearBadges = '';
+    const gear = Array.isArray(item.required_gear) ? item.required_gear : [];
+    if (gear.length) {
+        gearBadges = `<div class="kelby-gear-row">${
+            gear.map(g => `<span class="gear-badge">${esc(g)}</span>`).join('')
+        }</div>`;
     }
 
+    // ── Kelby 4-section content ────────────────────────────────────────────────
+    const sections = [
+        { label: 'The Shot',          key: 'the_shot'          },
+        { label: 'The Setup',         key: 'the_setup'         },
+        { label: 'The Settings',      key: 'the_settings'      },
+        { label: 'The Reality Check', key: 'the_reality_check' },
+    ];
+    const kelbySections = sections.map(s =>
+        item[s.key]
+            ? `<div class="kelby-section">
+                   <span class="kelby-label">${s.label}</span>
+                   <p class="kelby-text">${esc(item[s.key])}</p>
+               </div>`
+            : ''
+    ).join('');
+
+    // ── Google Earth button ────────────────────────────────────────────────────
+    const earthBtn = item.google_earth_url
+        ? `<a class="review-earth-btn" href="${esc(item.google_earth_url)}" target="_blank" rel="noopener noreferrer"
+              title="View in Google Earth">
+               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+               Earth
+           </a>`
+        : '';
+
     row.innerHTML = `
-        <button class="review-item-toggle" id="toggle-${type}-${idx}"
-                onclick="toggleItem('${type}', ${idx})" title="Toggle this item"></button>
-        <span class="review-item-name" id="name-${type}-${idx}">${esc(item.name || 'Unnamed')}</span>
-        <div class="review-item-tags">${tags}</div>
-        <div class="review-item-actions">
-            <button class="review-action-btn" id="edit-btn-${type}-${idx}"
-                    onclick="toggleEditPanel('${type}', ${idx})" title="Edit name or notes">Edit</button>
-            <button class="review-action-btn" id="replace-btn-${type}-${idx}"
-                    onclick="replaceItem('${type}', ${idx})" title="Get an alternative suggestion">Alt</button>
+        <div class="review-item-row">
+            <button class="review-item-toggle" id="toggle-${type}-${idx}"
+                    onclick="toggleItem('${type}', ${idx})" title="Toggle this location"></button>
+            <span class="review-item-name" id="name-${type}-${idx}">${esc(item.name || item.location_name || 'Unnamed')}</span>
+            <div class="review-item-tags">${tags}</div>
+            <div class="review-item-actions">
+                ${earthBtn}
+                <button class="review-action-btn" id="edit-btn-${type}-${idx}"
+                        onclick="toggleEditPanel('${type}', ${idx})" title="Edit name or notes">Edit</button>
+                <button class="review-action-btn" id="replace-btn-${type}-${idx}"
+                        onclick="replaceItem('${type}', ${idx})" title="Get an alternative suggestion">Alt</button>
+            </div>
+            <div class="review-status-dot ${dotClass}" title="${isVerified ? 'Verified open' : 'Unverified'}"></div>
         </div>
-        <div class="review-status-dot ${dotClass}" title="${isVerified ? 'Verified open' : 'Unverified'}"></div>`;
+        ${gearBadges}
+        <div class="kelby-sections">${kelbySections}</div>`;
 
     const editPanel = document.createElement('div');
     editPanel.className = 'review-edit-panel';
@@ -142,7 +167,7 @@ export function buildReviewItem(type, item, idx) {
     editPanel.innerHTML = `
         <label>Name</label>
         <input type="text" id="edit-name-${type}-${idx}"
-               value="${esc(item.name || '')}"
+               value="${esc(item.name || item.location_name || '')}"
                style="width:100%;border:1px solid var(--rule);border-bottom:2px solid var(--ink);
                       padding:7px 10px;font-family:Inter,sans-serif;font-size:0.85rem;
                       background:var(--white);margin-bottom:10px;border-radius:0;">
@@ -172,9 +197,7 @@ export function saveItemEdit(type, idx) {
     const newName  = document.getElementById(`edit-name-${type}-${idx}`).value.trim();
     const newNotes = document.getElementById(`edit-notes-${type}-${idx}`).value.trim();
     if (!newName) return;
-    const arr = type === 'photos' ? state.rawData.photos
-              : type === 'restaurants' ? state.rawData.restaurants
-              : state.rawData.attractions;
+    const arr = state.rawData.photos;
     arr[idx].name = newName;
     arr[idx]._consultant_notes = newNotes;
     document.getElementById(`name-${type}-${idx}`).textContent = newName;
@@ -191,11 +214,9 @@ export async function replaceItem(type, idx) {
     btn.classList.add('replacing');
     btn.disabled = true;
 
-    const arr = type === 'photos' ? state.rawData.photos
-              : type === 'restaurants' ? state.rawData.restaurants
-              : state.rawData.attractions;
-    const excludeNames  = arr.map(it => it.name).filter(Boolean);
-    const currentItem   = arr[idx];
+    const arr = state.rawData.photos;
+    const excludeNames = arr.map(it => it.name || it.location_name).filter(Boolean);
+    const currentItem  = arr[idx];
 
     try {
         const response = await apiFetch('/replace', {
@@ -203,10 +224,9 @@ export async function replaceItem(type, idx) {
             body: JSON.stringify({
                 session_id:    state.rawData.session_id,
                 trip_id:       state.rawData.trip_id || null,
-                type,
+                type:          'photos',
                 index:         idx,
                 day:           currentItem.day || 1,
-                meal_type:     currentItem.meal_type || null,
                 exclude_names: excludeNames,
             }),
         });

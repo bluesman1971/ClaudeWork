@@ -12,23 +12,21 @@ export const API_URL =
         : '';
 
 export const MAX_LOCATION_LENGTH = 100;
-export const MIN_DURATION = 1;
-export const MAX_DURATION  = 14;
 
 export const state = {
-    currentUser: null,
-    _clients:    [],
-    _trips:      [],
-    rawData:     null,
-    approvalState: { photos: [], restaurants: [], attractions: [] },
+    currentUser:   null,
+    _clients:      [],
+    _trips:        [],
+    _gearProfiles: [],      // loaded from GET /gear-profiles on login
+    rawData:       null,
+    approvalState: { photos: [] },
 
-    sectionEnabled: { photos: true, dining: true, attractions: true },
+    sectionEnabled: { photos: true },
 
     countConfig: {
-        photos_per_day:      { min: 1, max: 10, value: 3 },
-        restaurants_per_day: { min: 1, max: 8,  value: 3 },
-        attractions_per_day: { min: 1, max: 10, value: 4 },
+        photos_per_day: { min: 1, max: 10, value: 3 },
     },
 
+    gear_profile_id: null,  // selected for the current generate request
     progressInterval: null,
 };

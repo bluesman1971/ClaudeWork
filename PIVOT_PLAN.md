@@ -96,39 +96,49 @@ The Reality Check — crowds, parking, access, sun direction at their specific s
 "distance_from_accommodation": str
 ```
 
-**Google Earth URL format:**
+**Google Earth URL format (corrected in session after Phase 3):**
 ```python
-def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
-    return f"https://earth.google.com/web/@{lat},{lng},{altitude}a,800d,35y,0h,45t,0r"
+def google_earth_url(lat: float, lng: float, altitude: int = 0) -> str:
+    # Format: @lat,lng,altA,rangeD,tiltT,headingH,rollR  (5 params, NO 'y')
+    # range=150d = building-level zoom; tilt=60t = oblique angle
+    return f"https://earth.google.com/web/@{lat},{lng},{altitude}a,150d,60t,0h,0r"
 ```
 
 ---
 
-## Phase 4 — Frontend Updates
-*Vanilla JS edits only — no build tool. Estimated: 2–3 days.*
+## Phase 4 — Frontend Updates ✅ Complete
+*Completed 2026-03-05.*
 
 | # | Task | File(s) | Status |
 |---|------|---------|--------|
-| 4.1 | Update `form.js` — replace duration stepper with `start_date`/`end_date` date pickers; add gear profile selector (load from account or inline quick-entry) | `frontend/src/form.js` | `[ ]` |
-| 4.2 | Update `review.js` — render new 4-section card layout (Shot / Setup / Settings / Reality Check), add Google Earth link button, add ephemeris summary per day (golden hour time) | `frontend/src/review.js` | `[ ]` |
-| 4.3 | Update `clients.js` — add gear profile CRUD (view, create, edit vault) | `frontend/src/clients.js` | `[ ]` |
-| 4.4 | Update `main.css` — style new card layout, Google Earth button, ephemeris info strip, gear badge indicators | `frontend/src/main.css` | `[ ]` |
-| 4.5 | Update `index.html` — remove dining/attractions section from form, add dates section, add gear profile section | `index.html` | `[ ]` |
+| 4.1 | Replace duration stepper with `start_date`/`end_date` date pickers; remove dining/attractions form sections; add gear profile selector row | `frontend/index.html`, `frontend/src/generate.js`, `frontend/src/form.js`, `frontend/src/state.js` | `[x]` |
+| 4.2 | Rewrite review cards — Kelby 4-section layout (Shot / Setup / Settings / Reality Check), gear badge row, Google Earth button, shoot-window tag | `frontend/src/review.js` | `[x]` |
+| 4.3 | Add gear profile CRUD — list, create, edit, delete via `/gear-profiles` endpoints; slide-in gear panel + modal | `frontend/src/clients.js`, `frontend/index.html` | `[x]` |
+| 4.4 | Style Kelby cards, gear badges, Google Earth button, gear panel, gear modal, date pickers | `frontend/src/styles/main.css` | `[x]` |
+| 4.5 | Expose gear profile functions on `window.*`; wire `auth:success` to `refreshGearProfiles()` | `frontend/src/main.js` | `[x]` |
+| 4.6 | Add `GET/POST/PUT/DELETE /gear-profiles` endpoints to backend | `app.py` (schemas were already in `schemas.py`) | `[x]` |
+| 4.7 | Remove dining/attractions from `finalize.js` payload and `trips.js` load flow | `frontend/src/finalize.js`, `frontend/src/trips.js` | `[x]` |
 
 ---
 
-## Phase 5 — Test Suite
-*Start scaffold in Phase 3; fill out through Phase 4. Ongoing.*
+## Phase 5 — Test Suite ✅ Complete
+*Completed 2026-03-05. 59 tests, 0 failures.*
 
 | # | Task | File(s) | Status |
 |---|------|---------|--------|
-| 5.1 | Set up `pytest` + `httpx.ASGITransport` scaffold | `tests/` (new dir), `tests/conftest.py` | `[ ]` |
-| 5.2 | Mock `AsyncAnthropic` client with fixture responses (avoids live API costs in tests) | `tests/conftest.py` | `[ ]` |
-| 5.3 | Auth flow tests — login, token refresh, rate limiting lockout | `tests/test_auth.py` | `[ ]` |
-| 5.4 | Generate endpoint tests — returns job_id, background task queued | `tests/test_generate.py` | `[ ]` |
-| 5.5 | Ephemeris unit tests — known location + date → expected golden hour time | `tests/test_ephemeris.py` | `[ ]` |
-| 5.6 | Gear profile CRUD tests | `tests/test_clients.py` | `[ ]` |
-| 5.7 | Finalize endpoint test — produces valid HTML with expected structure | `tests/test_finalize.py` | `[ ]` |
+| 5.1 | Set up `pytest` + `httpx.ASGITransport` scaffold with `StaticPool` in-memory SQLite | `requirements.txt`, `pytest.ini`, `tests/__init__.py`, `tests/conftest.py` | `[x]` |
+| 5.2 | Auth flow tests — health, 401/403 guards, login success/fail, CSRF | `tests/test_auth.py` (8 tests) | `[x]` |
+| 5.3 | Generate endpoint tests — returns job_id, validation (dates/duration/location), job poll | `tests/test_generate.py` (10 tests) | `[x]` |
+| 5.4 | Ephemeris unit tests — Barcelona/London known dates, moon phase, format_ephemeris_block | `tests/test_ephemeris.py` (19 tests) | `[x]` |
+| 5.5 | Gear profile CRUD tests — full cycle, cross-user isolation (404), auth guards, validation | `tests/test_clients.py` (12 tests) | `[x]` |
+| 5.6 | Finalize endpoint tests — session injection, subset photos, HTML output, auth guards | `tests/test_finalize.py` (7 tests) | `[x]` |
+
+**Key fixture decisions:**
+- `StaticPool` SQLite: all sessions share one connection → committed data visible across `override_get_db` and `db_session`
+- No Redis in tests: app auto-falls back to in-memory dicts (`_session_store`, `_jobs`)
+- `PLACES_VERIFY_ENABLED = False` (no API key): map prefetching and Places verification skipped
+- `app._http_client` stubbed with `httpx.AsyncClient()` so lifespan is not required
+- Background scout task (from `asyncio.create_task`) fails gracefully without Claude API key; tests check only the immediate `{job_id}` response
 
 ---
 
@@ -153,6 +163,8 @@ def google_earth_url(lat: float, lng: float, altitude: int = 500) -> str:
 | 2026-03-05 | Phase 1 complete. CORS split dev/prod, `anthropic` pinned to `==0.80.0`, PII removed from login log, CSP header added to security middleware. `unsafe-inline` retained in `script-src` due to inline onclick handlers — flagged as TODO for Phase 4. | Start Phase 2 (DB schema: GearProfile model + Trip date fields) |
 | 2026-03-05 | Phase 2 complete. `GearProfile` model + migration added. `Trip` model updated with `start_date`/`end_date`/`gear_profile_id`. `duration` made nullable (backward compat via `duration_days` property). `GearProfileCreate`/`Update` schemas added. `GenerateRequest` updated with date/gear fields + model validator. Migration uses `batch_alter_table` throughout for SQLite compat. | Start Phase 3 (backend pivot: remove restaurant/attraction scouts, add ephemeris engine, rewrite photo scout) |
 | 2026-03-05 | Phase 3 complete. Restaurant/attraction scouts and tool schemas removed. `ephemeris.py` created (astral 3.2: sunrise/sunset/golden-hour/blue-hour/moon per day). `prompts.py` created (Kelby-style system + user prompt builders, gear-aware settings guidance, replace-endpoint prompts). `PHOTO_TOOL` rewritten with 12 Kelby-style fields. `google_earth_url()` helper added. `call_photo_scout()` rewritten with gear+ephemeris injection. `_run_scouts_background` updated (gear profile loaded from DB, ephemeris geocoded via Places API, photo-only scout tasks). FastAPI lifespan context manager replaces deprecated `on_event`. `/finalize` session key access hardened with `.get()` defaults. `/replace` restricted to photo type only. `generate_master_html` photo cards rewritten with 4-section Kelby layout + Google Earth links + gear badges. `astral==3.2` added to requirements.txt. | Start Phase 4 (frontend: date pickers, gear selector, Kelby card layout, Google Earth button) |
+| 2026-03-05 | Phase 4 complete. All 10 frontend files updated. Dining/attractions removed from form, state, generate, review, finalize, and trips. Duration integer replaced with start_date/end_date date pickers. Gear profile selector added to form. `review.js` rewritten — Kelby 4-section card (Shot/Setup/Settings/Reality Check) + gear badge row + Google Earth button. `clients.js` extended with full gear profile CRUD + slide-in panel + modal. `main.js` exports all gear profile functions to `window`. `main.css` extended with Kelby card, gear badge, Google Earth, and gear panel/modal styles. Backend: `GET/POST/PUT/DELETE /gear-profiles` endpoints added to `app.py`; `GearProfileCreate`/`Update` imported from `schemas.py`. Also fixed Google Maps URL (pin drop, not search) and Google Earth URL format in previous session. | Start Phase 5 (test suite) |
+| 2026-03-05 | Phase 5 complete. 59 tests, 0 failures. `pytest` + `pytest-asyncio` + `pytest-cov` added to requirements.txt. `pytest.ini` configured with `asyncio_mode=auto` + `asyncio_default_fixture_loop_scope=function`. `tests/conftest.py` with StaticPool in-memory SQLite, `override_get_db`, `test_user` (bcrypt rounds=4), `anon_client`, `auth_client` (JWT cookie + CSRF header + `_http_client` stub). Five test modules: `test_auth` (8), `test_generate` (10), `test_ephemeris` (19), `test_clients` (12), `test_finalize` (7). Key insight: CSRF guard fires before auth check for POST/PUT/DELETE, so unauthenticated mutating requests return 403, not 401. | — |
 
 ---
 
