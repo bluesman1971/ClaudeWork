@@ -224,7 +224,7 @@ SCOUT_MODEL_LABEL = os.getenv('SCOUT_MODEL_LABEL', 'Claude Haiku 4.5')
 # Phase 2 shot-planning model — Sonnet by default for better creative quality.
 # Each Phase 2 call is small (~1 200 tokens) so cost delta per trip is modest.
 # Set SHOT_MODEL=claude-haiku-4-5-20251001 to reduce cost at the expense of quality.
-SHOT_MODEL        = os.getenv('SHOT_MODEL',        'claude-sonnet-4-5-20251001')
+SHOT_MODEL        = os.getenv('SHOT_MODEL',        'claude-sonnet-4-5-20250929')
 SHOT_MODEL_LABEL  = os.getenv('SHOT_MODEL_LABEL',  'Claude Sonnet 4.5')
 
 # Per-call timeout (seconds) for all Claude API calls in the two-phase scout.
