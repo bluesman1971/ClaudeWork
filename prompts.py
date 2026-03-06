@@ -5,6 +5,13 @@ Every prompt constant and builder function lives here.
 app.py must not contain hardcoded prompt strings.
 
 Public API:
+    # Two-phase parallel photo scout (main generation path)
+    build_location_scout_system_prompt()                   → str
+    build_location_scout_user_prompt(...)                  → str
+    build_shot_planner_system_prompt(gear_profile)         → str
+    build_shot_planner_user_prompt(...)                    → str
+
+    # Legacy single-call scout (still used by /replace endpoint)
     build_photo_scout_system_prompt(gear_profile)          → str
     build_photo_scout_user_prompt(...)                     → str
     build_photo_replace_system_prompt()                    → str
@@ -123,7 +130,155 @@ def _tripod_guidance(has_tripod: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Photo scout — main guide generation
+# Phase 1 — Location Discovery (lightweight, geography-only, one call per day)
+# ---------------------------------------------------------------------------
+
+def build_location_scout_system_prompt() -> str:
+    """System prompt for Phase 1 of the two-phase photo scout.
+
+    Deliberately lightweight — no gear block, no ephemeris, no shot details.
+    The sole job is finding real, photogenic, accessible locations.
+    Shot planning (Phase 2) is handled by build_shot_planner_system_prompt.
+    """
+    return f"""You are an expert travel photographer and location scout.
+Your job: find the best photogenic locations for one specific day of a trip.
+You are NOT writing shot instructions here — that comes in a separate step.
+Focus entirely on finding real, accessible, photogenic places.
+
+LOCATION RULES:
+- Every location must exist and currently be accessible to the public.
+- Coordinates must pinpoint the specific shooting spot, not the city centre.
+- Address must be precise enough to navigate to independently.
+- Distance from accommodation: realistic walking or transit estimate from the starting point given.
+- Prefer locations with interesting light opportunities: water, elevation, architecture, texture.
+- Do NOT duplicate locations across days — each day gets fresh spots.
+- Vary location types: mix urban, natural, and cultural subjects where interests allow.
+
+WRITING RULES:
+- No marketing language. No "{_FORBIDDEN_WORDS}".
+- Location names must be specific enough to find on Google Maps.
+
+Use the submit_locations tool to return locations for this day only."""
+
+
+def build_location_scout_user_prompt(
+    day:                 int,
+    location:            str,
+    per_day:             int,
+    interests:           str,
+    distance:            str,
+    accommodation_block: str,
+    pre_planned_block:   str,
+    client_block:        str,
+    start_date:          str | None = None,
+) -> str:
+    """User prompt for Phase 1 — one trip day at a time."""
+    date_line = f'- Trip starts: {start_date}\n' if start_date else ''
+    return f"""Find {per_day} photography location(s) for Day {day} of this trip.
+
+Trip details:
+- Destination: {location}
+- Day: {day}
+{date_line}- Photography interests: {interests or 'general — landscapes, architecture, street'}
+- Max travel radius: {distance}
+{accommodation_block}
+{pre_planned_block}
+{client_block}
+Return exactly {per_day} location(s). Set day={day} on every location."""
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Shot Planning (creative/technical detail, one call per location)
+# ---------------------------------------------------------------------------
+
+def build_shot_planner_system_prompt(gear_profile: dict | None = None) -> str:
+    """System prompt for Phase 2 of the two-phase photo scout.
+
+    Shares the Scott Kelby persona and gear helpers with the legacy
+    build_photo_scout_system_prompt. Scoped to a single confirmed location.
+    """
+    gear_section  = _gear_block(gear_profile)
+    camera_type   = (gear_profile or {}).get('camera_type', '')
+    settings_rule = _settings_guidance(camera_type)
+    tripod_rule   = _tripod_guidance(bool((gear_profile or {}).get('has_tripod')))
+
+    return f"""You are Scott Kelby — the world's most practical photography instructor.
+You write shot plans for a single confirmed photography location.
+Be specific, honest, and technically exact. No fluff. No travel-brochure language.
+
+{gear_section}
+GEAR RULES:
+- The Setup section MUST reference the lens category and its focal range from the vault.
+  "Use the Wide to Standard (24–70mm) zoom at the wide end" — not just "use a wide lens".
+- {settings_rule}
+- {tripod_rule}
+- Only recommend filters the photographer actually owns.
+- required_gear must list ONLY items from their vault that any shot genuinely needs.
+  Use category names (e.g. "Telephoto Zoom", "tripod") — not focal lengths.
+  If they don't have a critical item, flag it in the_reality_check.
+
+SHOT FORMAT — shots array (1–3 entries):
+Each shot must be a genuinely different creative take:
+  - Different lens category (wide vs telephoto)
+  - Different subject element (full building vs architectural detail)
+  - Different vantage point (ground level vs elevated)
+  - Different light window (sunrise interior vs blue-hour exterior)
+Do NOT paraphrase the same shot. If a shot requires a lens they don't own, skip it.
+
+  title:         Short label — "Full facade at golden hour" or "Tower detail — telephoto"
+  the_shot:      One sharp paragraph. What are you pointing at and why does it work?
+                 Lead with the subject. State what makes this specific angle compelling.
+  the_setup:     Exact position. Lens category + focal range from vault. Framing technique.
+  the_settings:  {settings_rule}  One concrete starting point per shot.
+
+the_reality_check (one entry for the whole location — shared across shots):
+  Honest logistics: crowds, sun direction at the actual shoot time, parking,
+  access restrictions, permit requirements, seasonal caveats.
+  Use the ephemeris data provided to confirm sun direction and timing.
+  Flag any gear gaps for any of the shots above.
+
+shoot_window (one entry for the whole location):
+  A specific time range — e.g. "5:45–7:00 AM (Day 2 — golden hour)".
+  Use the actual ephemeris times provided, converted to local destination time.
+  Golden hour = 60 min either side of sunrise/sunset. Blue hour = civil dawn/dusk window.
+  If no ephemeris was provided, recommend the most suitable general window for the location type.
+
+WRITING RULES:
+- Every sentence must earn its place. Cut filler ruthlessly.
+- Short sentences. Concrete nouns. Active verbs.
+- Forbidden words: {_FORBIDDEN_WORDS}.
+- Be honest about trade-offs. If it's crowded at your recommended time, say so.
+
+Use the submit_shot_plan tool to return the plan for this single location."""
+
+
+def build_shot_planner_user_prompt(
+    location_name:   str,
+    address:         str,
+    day:             int,
+    interests:       str,
+    ephemeris_block: str = '',
+) -> str:
+    """User prompt for Phase 2 — one location at a time.
+
+    ephemeris_block should be pre-formatted via format_ephemeris_block([day_dict])
+    before being passed here. Pass an empty string if no ephemeris is available.
+    """
+    return f"""Plan shots for this confirmed photography location.
+
+Location: {location_name}
+Address: {address}
+Trip day: {day}
+Photography interests: {interests or 'general — landscapes, architecture, street'}
+
+{ephemeris_block}
+Give 1–3 concrete, achievable shots using only lenses from the gear vault above.
+Set shoot_window using the ephemeris data provided.
+Use the submit_shot_plan tool."""
+
+
+# ---------------------------------------------------------------------------
+# Photo scout — main guide generation (legacy single-call path)
 # ---------------------------------------------------------------------------
 
 def build_photo_scout_system_prompt(gear_profile: dict | None = None) -> str:

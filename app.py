@@ -51,14 +51,18 @@ from database import engine, get_db, SessionLocal
 from ephemeris import format_ephemeris_block, get_daily_ephemeris
 from models import Client, GearProfile, StaffUser, Trip, db
 from prompts import (
+    build_location_scout_system_prompt,
+    build_location_scout_user_prompt,
     build_photo_replace_system_prompt,
     build_photo_replace_user_prompt,
     build_photo_scout_system_prompt,
     build_photo_scout_user_prompt,
+    build_shot_planner_system_prompt,
+    build_shot_planner_user_prompt,
 )
 from redis_client import get_redis
 from schemas import FinalizeRequest, GenerateRequest, GearProfileCreate, GearProfileUpdate, ReplaceRequest
-from tool_schemas import PHOTO_TOOL
+from tool_schemas import LOCATION_TOOL, PHOTO_TOOL, SHOT_TOOL
 from trips import trips_router
 
 # ---------------------------------------------------------------------------
@@ -216,6 +220,16 @@ app.include_router(trips_router)
 
 SCOUT_MODEL       = os.getenv('SCOUT_MODEL',       'claude-haiku-4-5-20251001')
 SCOUT_MODEL_LABEL = os.getenv('SCOUT_MODEL_LABEL', 'Claude Haiku 4.5')
+
+# Phase 2 shot-planning model — Sonnet by default for better creative quality.
+# Each Phase 2 call is small (~1 200 tokens) so cost delta per trip is modest.
+# Set SHOT_MODEL=claude-haiku-4-5-20251001 to reduce cost at the expense of quality.
+SHOT_MODEL        = os.getenv('SHOT_MODEL',        'claude-sonnet-4-5-20251001')
+SHOT_MODEL_LABEL  = os.getenv('SHOT_MODEL_LABEL',  'Claude Sonnet 4.5')
+
+# Per-call timeout (seconds) for all Claude API calls in the two-phase scout.
+# Each call is small (max_tokens 1 000–1 200), so 45 s is very generous.
+CLAUDE_CALL_TIMEOUT = float(os.getenv('CLAUDE_CALL_TIMEOUT', '45'))
 
 PHOTOS_PER_DAY      = 3
 RESTAURANTS_PER_DAY = 3
@@ -802,6 +816,130 @@ async def call_photo_scout(
     return key, locations
 
 
+# ---------------------------------------------------------------------------
+# Two-phase parallel scout — Phase 1 and Phase 2 worker functions
+# ---------------------------------------------------------------------------
+
+async def call_location_scout_day(
+    day:                 int,
+    location:            str,
+    per_day:             int,
+    interests:           str,
+    distance:            str,
+    accommodation_block: str,
+    pre_planned_block:   str,
+    client_block:        str,
+    start_date:          date | None = None,
+) -> list:
+    """Phase 1 — Discover photography locations for a single trip day.
+
+    Returns a list of raw location dicts:
+        {day, name, address, lat, lng, distance_from_accommodation,
+         google_earth_url, _lat, _lng}
+
+    No shot details — those are added in Phase 2 by call_shot_planner.
+    Called in parallel for all trip days via asyncio.gather().
+    """
+    system_prompt = build_location_scout_system_prompt()
+    user_prompt   = build_location_scout_user_prompt(
+        day                 = day,
+        location            = location,
+        per_day             = per_day,
+        interests           = interests,
+        distance            = distance,
+        accommodation_block = accommodation_block,
+        pre_planned_block   = pre_planned_block,
+        client_block        = client_block,
+        start_date          = start_date.isoformat() if start_date else None,
+    )
+
+    message = await asyncio.wait_for(
+        anthropic_client.messages.create(
+            model       = SCOUT_MODEL,
+            max_tokens  = 1000,
+            tools       = [LOCATION_TOOL],
+            tool_choice = {'type': 'any'},
+            system      = system_prompt,
+            messages    = [{'role': 'user', 'content': user_prompt}],
+        ),
+        timeout = CLAUDE_CALL_TIMEOUT,
+    )
+
+    locations = []
+    for block in message.content:
+        if block.type == 'tool_use' and block.name == LOCATION_TOOL['name']:
+            locations = block.input.get('locations', [])
+            break
+
+    # Attach Google Earth URLs and mirror lat/lng for downstream code
+    for loc in locations:
+        lat = loc.get('lat')
+        lng = loc.get('lng')
+        if lat is not None and lng is not None:
+            try:
+                loc['google_earth_url'] = google_earth_url(float(lat), float(lng))
+                loc['_lat'] = float(lat)
+                loc['_lng'] = float(lng)
+            except (TypeError, ValueError):
+                pass
+
+    logger.info('Phase 1 Day %d: %d location(s) for %s', day, len(locations), location)
+    return locations
+
+
+async def call_shot_planner(
+    location_stub: dict,
+    interests:     str,
+    gear_profile:  dict | None = None,
+    ephemeris_day: dict | None = None,
+) -> dict:
+    """Phase 2 — Generate a Kelby-style shot plan for a single confirmed location.
+
+    Merges shot plan fields (shoot_window, shots, the_reality_check, required_gear)
+    into the location_stub dict and returns the merged result.
+    location_stub fields win on key collision (geography is authoritative).
+    Called in parallel for all locations via asyncio.gather().
+    """
+    eph_block = format_ephemeris_block([ephemeris_day]) if ephemeris_day else ''
+
+    system_prompt = build_shot_planner_system_prompt(gear_profile)
+    user_prompt   = build_shot_planner_user_prompt(
+        location_name   = location_stub['name'],
+        address         = location_stub.get('address', ''),
+        day             = location_stub['day'],
+        interests       = interests,
+        ephemeris_block = eph_block,
+    )
+
+    message = await asyncio.wait_for(
+        anthropic_client.messages.create(
+            model       = SHOT_MODEL,
+            max_tokens  = 1200,
+            tools       = [SHOT_TOOL],
+            tool_choice = {'type': 'any'},
+            system      = system_prompt,
+            messages    = [{'role': 'user', 'content': user_prompt}],
+        ),
+        timeout = CLAUDE_CALL_TIMEOUT,
+    )
+
+    shot_plan: dict = {}
+    for block in message.content:
+        if block.type == 'tool_use' and block.name == SHOT_TOOL['name']:
+            shot_plan = block.input
+            break
+
+    # Stub fields take precedence — geography / coordinates are authoritative
+    merged = {**shot_plan, **location_stub}
+
+    logger.info(
+        'Phase 2 Day %d %r: %d shot(s) planned',
+        location_stub['day'], location_stub['name'],
+        len(shot_plan.get('shots', [])),
+    )
+    return merged
+
+
 async def _run_single_scout(name, fn, args, kwargs, location, accommodation_coords=None):
     """
     Call one async scout function, run Places verification, apply haversine distances,
@@ -925,70 +1063,202 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
         elif start_date:
             logger.info('BG job=%s: ephemeris skipped — Places API key not configured', job_id[:8])
 
-        _job_update(job_id, {'progress': 25, 'message': f'Scouting photography locations in {location}…'})
-
-        if PLACES_VERIFY_ENABLED:
-            logger.info('BG job=%s: Places verification enabled', job_id[:8])
-        else:
-            logger.info('BG job=%s: Places verification disabled (no API key)', job_id[:8])
-
-        # ── Photo scout task ──────────────────────────────────────────────────
-        scout_tasks = {
-            'photos': (
-                call_photo_scout,
-                (location, duration, photo_interests, distance),
-                {
-                    'per_day':        photos_per_day,
-                    'accommodation':  accommodation,
-                    'pre_planned':    pre_planned,
-                    'client_profile': client_profile,
-                    'gear_profile':   gear_profile,
-                    'ephemeris_data': ephemeris_data,
-                    'start_date':     start_date,
-                },
-            ),
-        }
-
-        # ── Run scout (with retry) ────────────────────────────────────────────
-        results = {'photos': []}
-        raw_results = await asyncio.gather(
-            *[_run_single_scout(name, fn, args, kwargs, location, accommodation_coords)
-              for name, (fn, args, kwargs) in scout_tasks.items()],
-            return_exceptions=True,
+        # ── Build shared prompt blocks (used by Phase 1 calls) ───────────────
+        accommodation_block = (
+            f'- Starting point: {accommodation}\n'
+            f'  Calculate all distances and travel times from this starting point.\n'
+            if accommodation else
+            '- Starting point: not specified — use city centre as the assumed travel base.\n'
         )
-        for (name, _), result in zip(scout_tasks.items(), raw_results):
-            if isinstance(result, Exception):
-                logger.error("BG job=%s scout '%s': initial run failed — %s", job_id[:8], name, result)
-                results[name] = []
-            else:
-                results[name] = result
-                logger.info("BG job=%s scout '%s': %d item(s)", job_id[:8], name, len(result))
-
-        # ── Retry if photo scout returned 0 locations ─────────────────────────
-        for attempt in range(1, SCOUT_MAX_RETRIES + 1):
-            if results['photos']:
-                break
-            logger.warning('BG job=%s: retry %d — photos returned 0', job_id[:8], attempt)
-            _job_update(job_id, {'message': 'Retrying photo scout…'})
-            await asyncio.sleep(SCOUT_RETRY_DELAY)
-            fn, args, kwargs = scout_tasks['photos']
-            try:
-                items             = await _run_single_scout('photos', fn, args, kwargs, location, accommodation_coords)
-                results['photos'] = items
-                logger.info("BG job=%s: retry %d returned %d location(s)", job_id[:8], attempt, len(items))
-            except Exception as exc:
-                logger.error("BG job=%s: retry %d failed — %s", job_id[:8], attempt, exc)
-
-        # ── Warn if still empty ───────────────────────────────────────────────
-        warnings = []
-        if not results['photos']:
-            warnings.append(
-                f'Photography locations could not be generated after '
-                f'{SCOUT_MAX_RETRIES + 1} attempt(s). Please try again.'
+        pre_planned_block = (
+            f'Already planned / committed:\n  {pre_planned}\n'
+            f'  Do NOT suggest anything that duplicates or conflicts with the above.\n'
+            if pre_planned else ''
+        )
+        profile       = client_profile or {}
+        profile_lines = []
+        if profile.get('travel_style'):
+            profile_lines.append(f"  Travel style: {profile['travel_style']}")
+        if profile.get('home_city'):
+            profile_lines.append(
+                f"  Home city: {profile['home_city']} — avoid locations similar to home; surprise them."
             )
-            logger.warning("BG job=%s: 0 photo locations after %d attempt(s)",
-                           job_id[:8], SCOUT_MAX_RETRIES + 1)
-            raise ValueError('No photo locations could be generated. Please try again.')
+        if profile.get('notes'):
+            profile_lines.append(f"  Consultant notes: {profile['notes']}")
+        client_block = (
+            'Client profile:\n' + '\n'.join(profile_lines) + '\n'
+            if profile_lines else
+            'Client profile: none provided — give broadly appealing recommendations.\n'
+        )
+
+        # ── Check cache (photo_v3 — two-phase output) ─────────────────────────
+        photo_cache_key = _cache_key(
+            'photo_v3', location, duration, photo_interests, distance, photos_per_day,
+            accommodation, pre_planned,
+            json.dumps(client_profile or {}, sort_keys=True),
+            json.dumps(gear_profile    or {}, sort_keys=True),
+            str(start_date),
+        )
+        final_locations = _get_cached(photo_cache_key)
+        if final_locations is not None:
+            logger.info('BG job=%s: photo_v3 cache hit for %s (%d locations)',
+                        job_id[:8], location, len(final_locations))
+        else:
+            # ── Phase 1: Location Discovery — all days in parallel ────────────
+            _job_update(job_id, {'progress': 25,
+                                 'message': f'Discovering locations in {location}…'})
+            if PLACES_VERIFY_ENABLED:
+                logger.info('BG job=%s: Places verification enabled', job_id[:8])
+            else:
+                logger.info('BG job=%s: Places verification disabled (no API key)', job_id[:8])
+
+            day_results = await asyncio.gather(
+                *[
+                    call_location_scout_day(
+                        day                 = d,
+                        location            = location,
+                        per_day             = photos_per_day,
+                        interests           = photo_interests,
+                        distance            = distance,
+                        accommodation_block = accommodation_block,
+                        pre_planned_block   = pre_planned_block,
+                        client_block        = client_block,
+                        start_date          = start_date,
+                    )
+                    for d in range(1, duration + 1)
+                ],
+                return_exceptions=True,
+            )
+
+            # Collect successful days; queue failed/empty days for retry
+            location_stubs_by_day: dict[int, list] = {}
+            retry_days: list[int] = []
+            for day_idx, result in enumerate(day_results, 1):
+                if isinstance(result, Exception):
+                    logger.error('BG job=%s: Phase 1 Day %d error — %s',
+                                 job_id[:8], day_idx, result)
+                    retry_days.append(day_idx)
+                elif not result:
+                    logger.warning('BG job=%s: Phase 1 Day %d returned 0 locations',
+                                   job_id[:8], day_idx)
+                    retry_days.append(day_idx)
+                else:
+                    location_stubs_by_day[day_idx] = result
+
+            # Retry failing days (granular — not full-trip retry)
+            for attempt in range(1, SCOUT_MAX_RETRIES + 1):
+                if not retry_days:
+                    break
+                logger.warning('BG job=%s: Phase 1 retry %d for days %s',
+                               job_id[:8], attempt, retry_days)
+                _job_update(job_id, {'message': f'Retrying location discovery for {len(retry_days)} day(s)…'})
+                await asyncio.sleep(SCOUT_RETRY_DELAY)
+                retry_results = await asyncio.gather(
+                    *[
+                        call_location_scout_day(
+                            day                 = d,
+                            location            = location,
+                            per_day             = photos_per_day,
+                            interests           = photo_interests,
+                            distance            = distance,
+                            accommodation_block = accommodation_block,
+                            pre_planned_block   = pre_planned_block,
+                            client_block        = client_block,
+                            start_date          = start_date,
+                        )
+                        for d in retry_days
+                    ],
+                    return_exceptions=True,
+                )
+                still_failing: list[int] = []
+                for d, result in zip(retry_days, retry_results):
+                    if isinstance(result, Exception) or not result:
+                        still_failing.append(d)
+                    else:
+                        location_stubs_by_day[d] = result
+                retry_days = still_failing
+
+            if not location_stubs_by_day:
+                raise ValueError('No photo locations could be generated. Please try again.')
+
+            # Flatten stubs in day order
+            all_stubs = [
+                loc
+                for d in sorted(location_stubs_by_day)
+                for loc in location_stubs_by_day[d]
+            ]
+            logger.info('BG job=%s: Phase 1 complete — %d location stubs across %d day(s)',
+                        job_id[:8], len(all_stubs), len(location_stubs_by_day))
+
+            # ── Places verification (between phases) ──────────────────────────
+            _job_update(job_id, {'progress': 40,
+                                 'message': f'Verifying {len(all_stubs)} location(s)…'})
+            if all_stubs and PLACES_VERIFY_ENABLED:
+                all_stubs, _removed = await verify_places_batch(
+                    all_stubs, 'name', 'address', location
+                )
+                logger.info('BG job=%s: Places verification done (%d remaining)',
+                            job_id[:8], len(all_stubs))
+            if all_stubs and accommodation_coords and accommodation_coords[0] is not None:
+                _apply_distances(all_stubs, accommodation_coords[0], accommodation_coords[1])
+
+            if not all_stubs:
+                raise ValueError('All discovered locations failed verification. Please try again.')
+
+            # ── Phase 2: Shot Planning — all locations in parallel ────────────
+            _job_update(job_id, {'progress': 55,
+                                 'message': f'Planning shots for {len(all_stubs)} location(s)…'})
+
+            # Build per-day ephemeris lookup (0-indexed → 1-based day number)
+            ephemeris_by_day: dict[int, dict | None] = {
+                d: (ephemeris_data[d - 1] if d - 1 < len(ephemeris_data) else None)
+                for d in range(1, duration + 1)
+            }
+
+            shot_results = await asyncio.gather(
+                *[
+                    call_shot_planner(
+                        location_stub = stub,
+                        interests     = photo_interests,
+                        gear_profile  = gear_profile,
+                        ephemeris_day = ephemeris_by_day.get(stub['day']),
+                    )
+                    for stub in all_stubs
+                ],
+                return_exceptions=True,
+            )
+
+            final_locations = []
+            for stub, result in zip(all_stubs, shot_results):
+                if isinstance(result, Exception):
+                    logger.error(
+                        'BG job=%s: Phase 2 failed for %r Day %d — %s',
+                        job_id[:8], stub.get('name'), stub.get('day'), result,
+                    )
+                    # Partial fallback: include the location but mark shots unavailable
+                    stub.setdefault('shoot_window', 'See trip notes for timing')
+                    stub.setdefault('shots', [])
+                    stub.setdefault('the_reality_check',
+                                   'Shot planning could not be completed — please use the Replace button.')
+                    stub.setdefault('required_gear', [])
+                    final_locations.append(stub)
+                else:
+                    final_locations.append(result)
+
+            if not any(loc.get('shots') for loc in final_locations):
+                raise ValueError('Shot planning failed for all locations. Please try again.')
+
+            logger.info(
+                'BG job=%s: Phase 2 complete — %d/%d locations have shots',
+                job_id[:8],
+                sum(1 for l in final_locations if l.get('shots')),
+                len(final_locations),
+            )
+
+            # Cache the combined result
+            _set_cached(photo_cache_key, final_locations)
+
+        warnings: list[str] = []
 
         colors = get_color_palette(location)
         _job_update(job_id, {'progress': 80, 'message': 'Saving trip…'})
@@ -1000,7 +1270,7 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
             'location': location,
             'duration': duration,
             'colors':   colors,
-            'photos':   results['photos'],
+            'photos':   final_locations,
         })
 
         # ── Save draft trip to DB ─────────────────────────────────────────────
@@ -1025,7 +1295,7 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
                     photos_per_day      = photos_per_day,
                     photo_interests     = photo_interests or None,
                     accommodation       = accommodation,
-                    raw_photos          = json.dumps(results['photos']),
+                    raw_photos          = json.dumps(final_locations),
                     colors              = json.dumps(colors),
                     session_id          = session_id,
                 )
@@ -1051,14 +1321,14 @@ async def _run_scouts_background(job_id: str, params: dict, user_id: int) -> Non
                 'location':     location,
                 'duration':     duration,
                 'colors':       colors,
-                'photos':       results['photos'],
-                'photo_count':  len(results['photos']),
+                'photos':       final_locations,
+                'photo_count':  len(final_locations),
                 'warnings':     warnings,
-                'model':        SCOUT_MODEL_LABEL,
+                'model':        f'{SCOUT_MODEL_LABEL} + {SHOT_MODEL_LABEL}',
             },
         })
         logger.info('BG job=%s: complete — %d photo locations',
-                    job_id[:8], len(results['photos']))
+                    job_id[:8], len(final_locations))
 
     except Exception as exc:
         logger.error('BG job=%s failed: %s', job_id, exc, exc_info=True)
