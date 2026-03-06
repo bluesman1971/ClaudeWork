@@ -1500,6 +1500,7 @@
             line-height: 1.35;
         }
         .lens-option input[type="checkbox"] {
+            width: auto;   /* override .modal-field input { width: 100% } */
             margin-top: 2px;
             flex-shrink: 0;
         }
