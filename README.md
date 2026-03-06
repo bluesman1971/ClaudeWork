@@ -1,4 +1,4 @@
-# Trip Master — Photography Guide Builder
+# Trip Master — Photography Guide Builder 1
 
 An internal tool for travel photographers. Enter a destination, shoot dates, photography interests, and your gear kit — get a Kelby-style photography guide with exact shoot windows, gear-specific settings, Google Earth links, and reality-check logistics. Generated in under a minute, powered by Claude AI.
 
