@@ -1266,6 +1266,17 @@
             appearance: none;
         }
         .modal-field textarea { min-height: 80px; resize: vertical; }
+        /* Restore native checkbox appearance — .modal-field input strips it */
+        .modal-field input[type="checkbox"] {
+            width: auto;
+            appearance: auto;
+            -webkit-appearance: checkbox;
+            border: initial;
+            background: initial;
+            padding: 0;
+            accent-color: var(--ink);
+            cursor: pointer;
+        }
         .modal-field input:focus,
         .modal-field select:focus,
         .modal-field textarea:focus { outline: none; border-bottom-color: var(--accent); }
@@ -1500,7 +1511,6 @@
             line-height: 1.35;
         }
         .lens-option input[type="checkbox"] {
-            width: auto;   /* override .modal-field input { width: 100% } */
             margin-top: 2px;
             flex-shrink: 0;
         }
